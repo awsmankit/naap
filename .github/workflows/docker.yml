@@ -1,0 +1,58 @@
+name: Docker
+
+on:
+  push:
+    branches: [main]
+    paths: [Dockerfile, docker-compose.yml, pyproject.toml, uv.lock, "app/**", "engine/**", "engine_struct/**", "web/**", "samples/**", .github/workflows/docker.yml]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Build image
+        run: docker build -t naap:ci .
+
+      - name: Start container
+        run: |
+          docker run -d --name naap -p 8000:8000 naap:ci
+          for i in $(seq 1 60); do
+            curl -fsS http://127.0.0.1:8000/api/meta >/dev/null && break
+            sleep 1
+          done
+          curl -fsS http://127.0.0.1:8000/api/meta
+
+      - name: Smoke test with the sample drawing
+        run: |
+          set -euo pipefail
+          id=$(curl -fsS -F "file=@samples/sample-house.dxf" http://127.0.0.1:8000/api/jobs | python3 -c 'import sys,json;print(json.load(sys.stdin)["id"])')
+          for i in $(seq 1 120); do
+            st=$(curl -fsS http://127.0.0.1:8000/api/jobs/$id | python3 -c 'import sys,json;print(json.load(sys.stdin)["status"])')
+            [ "$st" = ready ] && break
+            [ "$st" = error ] && { echo "job failed"; exit 1; }
+            sleep 1
+          done
+          curl -fsS http://127.0.0.1:8000/api/jobs/$id/mb | python3 -c '
+          import sys, json
+          mb = json.load(sys.stdin)
+          rows, flags = mb.get("rows", []), mb.get("flags", [])
+          print(f"rows={len(rows)} flags={len(flags)}")
+          assert rows, "no MB rows"
+          assert any(f.get("severity") == "error" for f in flags), "expected the sample mismatch flag"
+          '
+          curl -fsS http://127.0.0.1:8000/api/jobs/$id/config \
+            | curl -fsS -X POST -H 'Content-Type: application/json' --data-binary @- \
+                http://127.0.0.1:8000/api/jobs/$id/build >/dev/null
+          curl -fsS -o mb.xlsx http://127.0.0.1:8000/api/jobs/$id/mb.xlsx
+          test -s mb.xlsx
+
+      - name: Container logs
+        if: always()
+        run: docker logs naap || true
