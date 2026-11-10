@@ -1,0 +1,140 @@
+<!doctype html>
+<html lang="en-IN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Naap · Drawing to Measurement Book</title>
+<link rel="preload" href="fonts/osifont.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="preload" href="fonts/BarlowSemiCondensed-Regular.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="stylesheet" href="css/app.css">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='5' fill='%230d2233'/%3E%3Cpath d='M7 24V8h6M7 16h5M19 8v16h6' stroke='%23e9c46a' stroke-width='2.4' fill='none'/%3E%3C/svg%3E">
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+
+<header class="bar" role="banner">
+  <a class="mark" href="#" id="home" aria-label="Naap, drawing to measurement book, start over">
+    <svg viewBox="0 0 32 32" aria-hidden="true"><path d="M5 27V5l22 22z" /><path d="M10 22v-6l6 6z" /></svg>
+    <span>Naap <i aria-hidden="true">·</i> Drawing <i aria-hidden="true">→</i> Measurement Book</span>
+  </a>
+  <ol class="steps" id="steps" aria-label="Progress">
+    <li data-step="upload"><button type="button"><b>1</b>Upload</button></li>
+    <li data-step="review"><button type="button"><b>2</b>Review</button></li>
+    <li data-step="mb"><button type="button"><b>3</b>Measurement book</button></li>
+  </ol>
+  <div class="bar-right">
+    <span class="job" id="jobName"></span>
+    <span class="mode" id="modeBadge" hidden title="Quantities come from web/mock/mb.json, not the engine">Mock data</span>
+    <a class="btn ghost" id="btnXlsx" hidden>Export Excel</a>
+  </div>
+</header>
+
+<main id="main">
+  <!-- ============================== UPLOAD ============================== -->
+  <section class="view view-upload" id="view-upload" aria-labelledby="upTitle">
+    <div class="sheet" id="dropzone" tabindex="0" role="button" aria-describedby="upHint">
+      <svg class="sheet-grid" aria-hidden="true"><defs>
+        <pattern id="g1" width="24" height="24" patternUnits="userSpaceOnUse"><path d="M24 0H0V24" fill="none" stroke="currentColor" stroke-width=".5"/></pattern>
+      </defs><rect width="100%" height="100%" fill="url(#g1)"/></svg>
+      <div class="sheet-body">
+        <svg class="dz-icon" viewBox="0 0 64 64" aria-hidden="true">
+          <path d="M14 8h26l10 10v38H14z" /><path d="M40 8v10h10" /><path d="M32 46V26m-8 8 8-8 8 8" />
+        </svg>
+        <h1 id="upTitle">Drop a drawing to start a measurement book</h1>
+        <p id="upHint">AutoCAD <b>.dwg</b> or <b>.dxf</b> up to <span id="maxMb">300</span> MB, or a vector <b>.pdf</b> drawing set. Nothing leaves this computer.</p>
+        <label class="btn primary" for="fileInput">Choose a file</label>
+        <input type="file" id="fileInput" accept=".dwg,.dxf,.pdf" hidden>
+      </div>
+      <!-- the title block fills in as the drawing is converted -->
+      <dl class="titleblock" id="titleblock" aria-live="polite">
+        <div class="tb-wide"><dt>Drawing</dt><dd id="tbName">Awaiting file</dd></div>
+        <div><dt>Size</dt><dd id="tbSize">—</dd></div>
+        <div><dt>Units</dt><dd id="tbUnits">—</dd></div>
+        <div><dt>Entities</dt><dd id="tbEnts">—</dd></div>
+        <div><dt>Layers</dt><dd id="tbLayers">—</dd></div>
+        <div><dt>Views</dt><dd id="tbViews">—</dd></div>
+        <div><dt>Elapsed</dt><dd id="tbTime">—</dd></div>
+      </dl>
+    </div>
+
+    <div class="upload-side">
+      <ol class="stages" id="stages" aria-label="Conversion progress" hidden></ol>
+      <p class="err" id="upErr" role="alert" hidden></p>
+      <h2 class="side-h">Recent drawings</h2>
+      <ul class="recent" id="recent"><li class="muted">None yet.</li></ul>
+      <p class="muted small" id="mockHint">No drawing to hand? <a href="#" id="btnSample">Process the sample house</a> (<code>samples/sample-house.dxf</code>, a made-up 2BHK) or <a href="?mock=1">preview its book offline</a>.</p>
+    </div>
+  </section>
+
+  <!-- ============================== WORKSPACE (review + MB) ============================== -->
+  <section class="view view-work" id="view-work" hidden>
+    <div class="work" id="work">
+      <div class="stage" id="stage">
+        <canvas id="canvas" aria-label="Drawing viewer. Drag to pan, scroll to zoom, click an entity to list the MB rows that use it." tabindex="0"></canvas>
+        <div class="tools" role="toolbar" aria-label="Drawing">
+          <button class="tool" id="tFit" title="Fit to view (F)" aria-label="Fit to view"><svg viewBox="0 0 20 20"><path d="M3 7V3h4M13 3h4v4M17 13v4h-4M7 17H3v-4"/></svg></button>
+          <button class="tool" id="tLayers" title="Layers" aria-label="Layers" aria-expanded="false" aria-controls="layerPop"><svg viewBox="0 0 20 20"><path d="m10 3 7 4-7 4-7-4zM3 11l7 4 7-4"/></svg></button>
+          <button class="tool" id="tText" title="Show text" aria-label="Show text" aria-pressed="true"><svg viewBox="0 0 20 20"><path d="M4 5h12M10 5v11"/></svg></button>
+          <button class="tool" id="tColour" title="CAD layer colours" aria-label="CAD layer colours" aria-pressed="false"><svg viewBox="0 0 20 20"><circle cx="7" cy="8" r="3.5"/><circle cx="13" cy="8" r="3.5"/><circle cx="10" cy="13" r="3.5"/></svg></button>
+          <button class="tool" id="tFlags" title="Flag markers" aria-label="Flag markers" aria-pressed="true"><svg viewBox="0 0 20 20"><path d="M5 17V3m0 1h9l-2 3 2 3H5"/></svg></button>
+          <button class="tool" id="tRaster" title="Sheet as printed (raster backdrop)" aria-label="Sheet as printed" aria-pressed="false" hidden><svg viewBox="0 0 20 20"><rect x="3" y="4" width="14" height="12" rx="1"/><path d="m5 14 4-4 3 3 2-2 2 2"/><circle cx="13" cy="7.5" r="1.2"/></svg></button>
+          <button class="tool" id="tCal" title="Calibrate this sheet: two points and a known length" aria-label="Calibrate this sheet" aria-pressed="false" hidden><svg viewBox="0 0 20 20"><path d="m3 13 10-10 4 4L7 17z"/><path d="m6 10 1.5 1.5M8.5 7.5 10 9M11 5l1.5 1.5"/></svg></button>
+        </div>
+        <div class="sheet-strip" id="sheetStrip" hidden></div>
+        <div class="calbar" id="calbar" role="status" aria-live="polite" hidden></div>
+        <div class="calpop" id="calpop" role="dialog" aria-label="Calibrate sheet" hidden></div>
+        <div class="layer-pop" id="layerPop" hidden>
+          <div class="lp-head"><input type="search" id="lpFilter" placeholder="Filter layers" aria-label="Filter layers"><button class="link" id="lpAll">All</button><button class="link" id="lpNone">None</button></div>
+          <ul id="lpList"></ul>
+        </div>
+        <div class="pickpop" id="pickpop" hidden role="dialog" aria-label="MB rows using this entity"></div>
+        <div class="hud">
+          <canvas id="scalebar" width="180" height="28" aria-hidden="true"></canvas>
+          <span id="coords" class="coords"></span>
+        </div>
+        <canvas class="minimap" id="minimap" width="220" height="150" aria-label="Minimap. Click to move the view."></canvas>
+        <div class="stage-msg" id="stageMsg" hidden></div>
+      </div>
+
+      <div class="splitter" id="splitter" role="separator" aria-orientation="vertical" aria-label="Resize drawing and table" tabindex="0" aria-valuemin="25" aria-valuemax="75"></div>
+
+      <!-- review panel -->
+      <aside class="panel review-panel" id="reviewPanel" hidden aria-label="Review settings">
+        <div class="panel-head">
+          <h2>Check what gets measured</h2>
+          <p class="muted" id="rvIntro">Include the views to measure, confirm layer roles and heights, then build the book.</p>
+        </div>
+        <div class="tabs" role="tablist" id="rvTabs">
+          <button role="tab" aria-selected="true" data-tab="views">Views <span class="n" id="nViews"></span></button>
+          <button role="tab" aria-selected="false" data-tab="layers">Layers <span class="n" id="nLayers"></span></button>
+          <button role="tab" aria-selected="false" data-tab="heights">Heights</button>
+        </div>
+        <div class="rv-body" id="rvBody"></div>
+        <div class="panel-foot">
+          <span class="muted small" id="saveState"></span>
+          <button class="btn primary" id="btnBuild">Build measurement book</button>
+        </div>
+      </aside>
+
+      <!-- MB ledger -->
+      <aside class="panel ledger" id="ledger" hidden aria-label="Measurement book">
+        <div class="tabs" role="tablist" id="mbTabs"></div>
+        <div class="filters" id="filters">
+          <input type="search" id="q" placeholder="Search items, rooms, tags  ( / )" aria-label="Search">
+          <select id="tradeSel" aria-label="Trade"></select>
+          <div class="seg" id="statusSeg" role="group" aria-label="Status filter"></div>
+        </div>
+        <div class="notice" id="notice" hidden></div>
+        <div class="sheet-scroll" id="scroller" tabindex="-1">
+          <table class="mb" id="table"></table>
+        </div>
+        <footer class="ledger-foot" id="foot" aria-live="polite"></footer>
+      </aside>
+    </div>
+  </section>
+</main>
+
+<div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
+<script type="module" src="js/main.js"></script>
+</body>
+</html>

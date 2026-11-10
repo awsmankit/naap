@@ -1,0 +1,16 @@
+# docker compose up --build   ->  http://localhost:8000
+# The app has no login: keep the published port on localhost unless it sits behind your own auth.
+services:
+  naap:
+    build: .
+    image: naap:latest
+    ports:
+      - "127.0.0.1:${NAAP_PORT:-8000}:8000"
+    environment:
+      DWG_MB_MAX_UPLOAD_MB: ${DWG_MB_MAX_UPLOAD_MB:-300}
+    volumes:
+      - naap-data:/data
+    restart: unless-stopped
+
+volumes:
+  naap-data:

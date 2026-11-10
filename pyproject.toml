@@ -1,0 +1,32 @@
+[project]
+name = "naap"
+version = "0.1.0"
+description = "Naap (नाप): drawing to Measurement Book. DWG/DXF/PDF to a CPWD-style MB with every quantity traceable to the drawing."
+readme = "README.md"
+license = "AGPL-3.0-only"
+license-files = ["LICENSE", "THIRD_PARTY_NOTICES.md"]
+requires-python = ">=3.12"
+keywords = ["dwg", "dxf", "measurement-book", "cpwd", "boq", "quantity-takeoff", "is-1200"]
+dependencies = [
+    "ezdxf>=1.4.5",
+    "fastapi>=0.162.2",
+    "openpyxl>=3.1.5",
+    "pymupdf>=2.1",
+    "python-multipart>=0.0.33",
+    "scipy>=1.18.1",
+    "uvicorn[standard]>=0.54.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/awsmankit/naap"
+Issues = "https://github.com/awsmankit/naap/issues"
+
+[dependency-groups]
+dev = [
+    "httpx>=0.28.1",
+    "pytest>=9.2.0",
+]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]

@@ -1,0 +1,100 @@
+{
+ "project": {
+  "name": "sample-house"
+ },
+ "layer_roles": {
+  "0": "ignore",
+  "Defpoints": "ignore",
+  "A-WALL": "wall-brick",
+  "A-WALL 115": "wall-brick",
+  "A-HATCH WALL": "ignore",
+  "A-COLUMN": "column",
+  "A-DOOR": "door",
+  "A-WINDOW": "window",
+  "A-DW TAG": "door",
+  "A-TEXT DETAIL": "room text",
+  "A-TEXT": "ignore",
+  "A-DIM": "dimension",
+  "A-WALL PARAPET": "parapet"
+ },
+ "walls": {
+  "wall-brick": {
+   "thickness_mm": 230,
+   "height_mm": 3000
+  },
+  "wall-brick-half": {
+   "thickness_mm": 115
+  },
+  "wall-AAC": {
+   "thickness_mm": 200,
+   "height_mm": 3000
+  },
+  "parapet": {
+   "thickness_mm": 230,
+   "height_mm": 600
+  }
+ },
+ "column": {
+  "height_mm": 3000
+ },
+ "slab_thickness_mm": 150,
+ "levels": [
+  {
+   "name": "Ground floor (FFL)",
+   "level_mm": 0
+  },
+  {
+   "name": "First floor slab",
+   "level_mm": 3300
+  }
+ ],
+ "cluster_gap": 110.0,
+ "regions": [
+  {
+   "id": 0,
+   "bbox": [
+    0.0,
+    10960.0,
+    11416.0,
+    18805.0
+   ],
+   "count": 15,
+   "name": "TERRACE PLAN",
+   "title_guess": "TERRACE PLAN",
+   "kind": "plan",
+   "include": true,
+   "level": ""
+  },
+  {
+   "id": 1,
+   "bbox": [
+    -1100.0,
+    -2390.0,
+    11380.0,
+    7205.0
+   ],
+   "count": 88,
+   "name": "GROUND FLOOR PLAN",
+   "title_guess": "GROUND FLOOR PLAN",
+   "kind": "plan",
+   "include": true,
+   "level": ""
+  },
+  {
+   "id": 2,
+   "bbox": [
+    18000.0,
+    3090.0,
+    26000.0,
+    6950.0
+   ],
+   "count": 34,
+   "name": "DOOR / WINDOW SCHEDULE",
+   "title_guess": "DOOR / WINDOW SCHEDULE",
+   "kind": "schedule",
+   "include": true,
+   "level": ""
+  }
+ ],
+ "layer_style": {}
+}

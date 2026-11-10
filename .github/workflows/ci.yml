@@ -1,0 +1,67 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    env:
+      LIBREDWG_VERSION: "0.14.8922"
+      LIBREDWG_SHA256: b8d28cb07824a1c33c57349b8f31d8debc21361789cdbd31e0c06030677164e2
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+
+      - name: Install Python and dependencies
+        run: |
+          uv python install 3.12
+          uv sync --frozen
+
+      # LibreDWG has no Ubuntu package: build dwg2dxf/dxf2dwg from the release tarball (cached).
+      # If this step fails, the DWG test is skipped rather than failing the run.
+      - name: Cache LibreDWG
+        id: libredwg-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/libredwg
+          key: libredwg-${{ env.LIBREDWG_VERSION }}-${{ runner.os }}
+
+      - name: Build LibreDWG
+        if: steps.libredwg-cache.outputs.cache-hit != 'true'
+        continue-on-error: true
+        run: |
+          curl -fsSL -o /tmp/libredwg.tar.xz \
+            "https://github.com/LibreDWG/libredwg/releases/download/${LIBREDWG_VERSION}/libredwg-${LIBREDWG_VERSION}.tar.xz"
+          echo "${LIBREDWG_SHA256}  /tmp/libredwg.tar.xz" | sha256sum -c -
+          mkdir /tmp/libredwg-src && tar -xJf /tmp/libredwg.tar.xz -C /tmp/libredwg-src --strip-components=1
+          cd /tmp/libredwg-src
+          # rpath: the app runs dwg2dxf with a minimal environment (no LD_LIBRARY_PATH)
+          ./configure --prefix="$HOME/libredwg" --disable-bindings --disable-static LDFLAGS="-Wl,-rpath,$HOME/libredwg/lib"
+          make -j"$(nproc)" && make install
+
+      - name: Put LibreDWG on PATH
+        run: |
+          if [ -x "$HOME/libredwg/bin/dwg2dxf" ]; then
+            echo "$HOME/libredwg/bin" >> "$GITHUB_PATH"
+            echo "LD_LIBRARY_PATH=$HOME/libredwg/lib" >> "$GITHUB_ENV"
+            echo "DWG2DXF=$HOME/libredwg/bin/dwg2dxf" >> "$GITHUB_ENV"
+          else
+            echo "LibreDWG not available: DWG tests will be skipped"
+          fi
+
+      - name: Set up Node (JS syntax check in tests/test_web_static.py)
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Tests
+        run: uv run pytest -q

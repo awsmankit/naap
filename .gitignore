@@ -1,0 +1,44 @@
+# Python / tooling
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+build/
+dist/
+*.egg-info/
+
+# OS / editors
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+# Uploaded drawings and generated jobs (client data: never commit)
+data/jobs/*
+!data/jobs/.gitkeep
+
+# Private tests that use real project drawings
+tests/private/
+
+# Drawings and documents: only the synthetic fixtures and the public sample are tracked
+*.dwg
+*.DWG
+*.pdf
+*.PDF
+!tests/fixtures/synthetic/*.pdf
+*.xlsx
+*.xls
+
+# Screenshots and recordings (add public, client-free images under docs/media/ deliberately)
+*.png
+*.jpg
+*.jpeg
+*.gif
+*.webp
+*.mov
+*.mp4
+!docs/media/**
