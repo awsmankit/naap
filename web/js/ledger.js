@@ -83,7 +83,7 @@ function renderFilters() {
   }
   const ph = { mb: "Search items, rooms, tags", abstract: "Search items", rooms: "Search rooms", openings: "Search tags or rooms", dims: "Search values or views", flags: "Search flags",
     steel: "Search elements", schedules: "Search schedules, tags", calib: "Search sheets" }[S.tab];
-  $("#q").placeholder = `${ph}  ( / )`;
+  $("#q").placeholder = S.touch ? ph : `${ph}  ( / )`;
 }
 
 /** Worst status of a set of lines; "scaled" ranks between assumed and ok. */
@@ -100,12 +100,20 @@ export function renderLedger() {
   renderTabs();
   renderFilters();
   S.visible = [];
+  S.shown = null;
   const table = $("#table");
   const scroller = $("#scroller");
-  scroller.querySelectorAll(".flagwrap, .panewrap").forEach((n) => n.remove());
+  scroller.querySelectorAll(".flagwrap, .panewrap, .cardwrap").forEach((n) => n.remove());
   const panes = { steel: renderSteel, schedules: renderSchedules, calib: renderCalibration };
-  table.hidden = S.tab === "flags" || S.tab in panes;
+  table.hidden = S.compact || S.tab === "flags" || S.tab in panes;
+  if (S.compact) table.replaceChildren();
   if (S.tab in panes) { scroller.append(el("div", { class: "panewrap" }, panes[S.tab]())); applySelection(false); renderFoot(); return; }
+  if (S.compact && S.tab !== "flags") {
+    scroller.append(el("div", { class: "cardwrap" }, ({ mb: cardsMB, abstract: cardsAbstract, rooms: cardsRooms, openings: cardsOpenings, dims: cardsDims })[S.tab]()));
+    applySelection(false);
+    renderFoot();
+    return;
+  }
   ({ mb: renderMB, abstract: renderAbstract, rooms: renderRooms, openings: renderOpenings, dims: renderDims, flags: renderFlags })[S.tab]();
   applySelection(false);
   renderFoot();
@@ -155,7 +163,8 @@ function renderMB() {
   let lastTrade = null, lastItem = null;
   const byTrade = new Map();
   for (const r of vis) byTrade.set(r.trade, (byTrade.get(r.trade) || 0) + 1);
-  for (const r of vis) {
+  S.shown = vis.length;
+  const emit = (r) => {
     const t = tradeOf(r.trade);
     if (r.trade !== lastTrade) {
       const items = new Set(vis.filter((x) => x.trade === r.trade).map((x) => x.item)).size;
@@ -193,7 +202,22 @@ function renderMB() {
       el("td", { class: "c-st" }, chip(r.chip || r.status)));
     if (S.linked.has(r.id)) tr.classList.add("linked");
     body.append(selectable(tr, "row", r.id));
-  }
+  };
+  // long books (thousands of lines): the first screenfuls now, the rest in small batches after
+  // the page has painted, so typing in the search box and switching tabs stay quick
+  const token = (S.renderToken = (S.renderToken || 0) + 1);
+  const selAt = S.sel?.kind === "row" ? vis.findIndex((r) => r.id === S.sel.key) : -1;
+  let i = 0;
+  const first = Math.max(250, selAt + 40);
+  for (; i < Math.min(vis.length, first); i++) emit(vis[i]);
+  const more = () => {
+    if (token !== S.renderToken || S.tab !== "mb" || S.compact) return;
+    const end = Math.min(vis.length, i + 400);
+    for (; i < end; i++) emit(vis[i]);
+    if (i < vis.length) setTimeout(more, 0);
+    else applySelection(false);
+  };
+  if (i < vis.length) setTimeout(more, 0);
   if (!vis.length) body.append(el("tr", { class: "empty" }, el("td", { colspan: 10 }, "No lines match. Clear the search or filters.")));
   table.replaceChildren(head([["S.No", "c-sno"], [compact ? (rows.some((r) => r.desc) ? "Description · location" : "Location") : "Description"], compact ? null : ["Location", "c-loc"], ["Nos", "num c-nos"], ["L", "num", "Length, m"],
     ["B", "num", "Breadth, m"], ["H/D", "num", "Height or depth, m"], ["Qty", "num"], ["Unit", "c-unit"], ["Status", "c-st"]]), body);
@@ -325,7 +349,7 @@ function flagItem(f) {
   const done = f.status !== "open";
   const rows = S.mb.rows.filter((r) => r.flag_ids.includes(f.id));
   const li = el("li", { class: `flag${done ? " done" : ""}`, "data-kind": "flag", "data-key": f.id, tabindex: -1 });
-  li.addEventListener("click", (e) => { if (!e.target.closest("button, input, form, summary, a")) A.select("flag", f.id, { from: "table" }); });
+  li.addEventListener("click", (e) => { if (!e.target.closest("button, input, form, summary, a")) (S.compact ? A.tapCard : A.select)("flag", f.id, { from: "table" }); });
   li.addEventListener("mouseenter", () => A.preview("flag", f.id));
   li.addEventListener("mouseleave", () => A.preview(null));
   S.visible.push({ kind: "flag", key: f.id });
@@ -336,7 +360,8 @@ function flagItem(f) {
   } else {
     const inp = f.input ? el("input", {
       type: f.input.type === "number" ? "number" : "text", name: "v", placeholder: f.input.placeholder || "",
-      inputmode: f.input.type === "number" ? "decimal" : null, step: "any",
+      inputmode: f.input.type === "number" ? "decimal" : null, step: "any", autocomplete: "off", enterkeyhint: "done",
+      autocapitalize: f.input.type === "number" ? null : "characters", "aria-describedby": f.suggested_fix ? `fx-${f.id}` : null,
     }) : null;
     action = el("form", {
       onsubmit: (e) => {
@@ -356,7 +381,7 @@ function flagItem(f) {
     el("div", { class: "meta" }, `${SEV[f.severity]?.label || f.severity}, ${f.category}${f.refs.length ? "" : ". No drawing location"}`),
     f.detail ? el("p", { class: "d" }, f.detail) : null,
     f.evidence?.length ? el("details", {}, el("summary", {}, `Evidence (${f.evidence.length})`), el("ul", {}, f.evidence.map((x) => el("li", {}, x)))) : null,
-    f.suggested_fix && !done ? el("p", { class: "fix" }, el("b", {}, "Fix: "), f.suggested_fix) : null,
+    f.suggested_fix && !done ? el("p", { class: "fix", id: `fx-${f.id}` }, el("b", {}, "Fix: "), f.suggested_fix) : null,
     rows.length ? el("div", { class: "affects" }, `Affects ${rows.length} MB line${rows.length > 1 ? "s" : ""}: `,
       el("button", { class: "link", type: "button", onclick: () => A.showRows(rows.map((r) => r.id)) }, "show in book")) : null,
     action].filter(Boolean));
@@ -368,8 +393,8 @@ export function applySelection(scroll = true) {
   const sel = S.sel;
   const scroller = $("#scroller");
   scroller.querySelectorAll(".sel").forEach((n) => n.classList.remove("sel"));
-  scroller.querySelectorAll("tr.detail").forEach((n) => n.remove());
-  scroller.querySelectorAll("tr.row[data-kind='row']").forEach((n) => n.classList.toggle("linked", S.linked.has(n.dataset.key)));
+  scroller.querySelectorAll("tr.detail, .cdetail").forEach((n) => n.remove());
+  scroller.querySelectorAll("tr.row[data-kind='row'], .card[data-kind='row']").forEach((n) => n.classList.toggle("linked", S.linked.has(n.dataset.key)));
   if (!sel) return;
   if (sel.kind === "calib" || sel.kind === "sample") {  // calibration row + its sample list
     const n = String(sel.key).split(":")[0];
@@ -383,10 +408,10 @@ export function applySelection(scroll = true) {
   node.classList.add("sel");
   if (sel.kind === "row") {
     const r = rowById(sel.key);
-    if (r) node.after(detailRow(r));
+    if (r) node.after(node.tagName === "TR" ? detailRow(r) : cardDetail(r));
   }
   if (scroll) node.scrollIntoView({ block: "nearest" });
-  if (scroll && document.activeElement?.closest?.("#ledger") && !document.activeElement.matches("input, select, textarea")) node.focus({ preventScroll: true });
+  if (scroll && document.activeElement?.closest?.("#ledger") && !document.activeElement.matches("input, select, textarea")) (node.querySelector?.(".k-main") || node).focus({ preventScroll: true });
 }
 
 function detailRow(r) {
@@ -420,7 +445,7 @@ export function renderFoot() {
   const sel = S.sel;
   const bits = [];
   if (S.tab === "mb") {
-    const shown = $("#table").querySelectorAll("tr.row").length;
+    const shown = S.shown ?? $("#table").querySelectorAll("tr.row").length;
     bits.push(el("span", {}, el("b", {}, shown), shown === mb.rows.length ? " lines" : ` of ${mb.rows.length} lines`));
   }
   if (sel?.kind === "row") {
@@ -430,9 +455,215 @@ export function renderFoot() {
     const a = mb.abstract.find((x) => String(x.sno) === sel.key);
     if (a) bits.push(el("span", {}, `Item ${a.sno}: `, el("b", {}, `${fq(a.qty)} ${unit(a.unit)}`), ` from ${a.row_ids.length} lines`));
   } else if (sel?.kind === "entity") {
-    bits.push(el("span", {}, el("b", {}, S.linked.size), " lines use the picked entity"));
+    bits.push(el("span", {}, el("b", {}, S.linked.size), S.linked.size === 1 ? " line uses the picked entity" : " lines use the picked entity"));
   }
   if (S.linked.size && sel?.kind !== "entity") bits.push(el("span", {}, el("b", {}, S.linked.size), " linked lines"));
   bits.push(el("span", { class: "kbd" }, el("kbd", {}, "↑"), " ", el("kbd", {}, "↓"), " move  ", el("kbd", {}, "F"), " fit  ", el("kbd", {}, "Esc"), " clear"));
   foot.replaceChildren(...bits);
 }
+
+// ------------------------------------------------------------------ cards (phones)
+// The same content as the tables, one card per line: S.No, item, location, the
+// Nos × L × B × H = Qty line, unit, status and flags. Trade groups fold up.
+const CARD_PAGE = 400;
+const shownLimit = () => S.cardLimit?.[S.tab] ?? CARD_PAGE;
+
+function moreButton(left) {
+  return el("button", { class: "btn cmore", type: "button", onclick: () => {
+    S.cardLimit = { ...(S.cardLimit || {}), [S.tab]: shownLimit() + CARD_PAGE };
+    renderLedger();
+  } }, `Show ${Math.min(left, CARD_PAGE)} more (${left} not shown)`);
+}
+
+/** A card: a full-width button (select + show on the drawing) and a side column (status, flags). */
+function card(kind, key, { cls = "", tc = null, main = [], side = [], neg = false } = {}) {
+  S.visible.push({ kind, key });
+  return el("div", { class: `card ${cls}${neg ? " neg" : ""}`, style: tc ? { "--tc": tc } : null, "data-kind": kind, "data-key": key, tabindex: "-1" },
+    el("button", { class: "k-main", type: "button", onclick: () => A.tapCard(kind, key) }, main, el("span", { class: "sr-only" }, ". Show on the drawing")),
+    el("div", { class: "k-side" }, side));
+}
+
+const CHEV = '<svg class="chev" viewBox="0 0 20 20" aria-hidden="true"><path d="m5 8 5 5 5-5"/></svg>';
+
+/** A foldable group (a trade, a door type, a view); kids() is only built when it is open. */
+function group(id, title, info, color, kids) {
+  const key = `${S.tab}:${id}`;
+  S.collapsed ??= new Set();
+  const open = !S.collapsed.has(key);
+  const bodyId = `cg-${S.tab}-${String(id).replace(/[^\w-]/g, "_")}`;
+  return el("section", { class: "cgroup" },
+    el("h3", { class: "cg-h" }, el("button", {
+      class: "cg-t", type: "button", "aria-expanded": String(open), "aria-controls": bodyId, "data-g": key,
+      onclick: () => {
+        if (S.collapsed.has(key)) S.collapsed.delete(key); else S.collapsed.add(key);
+        renderLedger();
+        $(`#scroller [data-g="${CSS.escape(key)}"]`)?.focus({ preventScroll: true });
+      },
+    }, color ? el("span", { class: "sw", style: { background: color } }) : null, el("span", {}, title), el("span", { class: "tc" }, info), svg(CHEV))),
+    el("div", { class: "cg-body", id: bodyId, hidden: !open }, open ? kids() : null));
+}
+
+function flagBadge(r) {
+  const open = r.flag_ids.map((id) => S.mb.flags.find((f) => f.id === id)).filter((f) => f && f.status === "open");
+  if (!open.length) return null;
+  const sev = ["error", "warning", "missing"].find((v) => open.some((f) => f.severity === v)) || open[0].severity;
+  return el("button", { class: "fbadge", type: "button", "aria-label": `${open.length} open flag${open.length > 1 ? "s" : ""}: ${open.map((f) => f.title).join("; ")}. Show in Flags`,
+    onclick: () => { A.setTab("flags"); A.select("flag", open[0].id, { from: "table" }); } }, sevGlyph(sev), String(open.length));
+}
+
+/** Σ of a set of lines when they share a unit ("" otherwise). */
+function sumLine(rows, get = (x) => x.qty) {
+  const units = new Set(rows.map((x) => unit(x.unit)));
+  if (units.size !== 1) return "";
+  return ` · Σ ${fq(rows.reduce((a, x) => a + (get(x) || 0), 0))} ${[...units][0]}`;
+}
+
+function formula(r) {
+  const prod = [r.nos, r.l, r.b, r.h].filter((v) => v != null).map((v) => fmt(v, 3)).join(" × ");
+  return el("span", { class: "k-f" }, prod ? `${prod} = ` : "", el("b", {}, fq(r.qty)), ` ${unit(r.unit)}`);
+}
+
+function cardsMB() {
+  const q = S.q.toLowerCase();
+  const rows = S.mb.rows;
+  if (!rows.length) return [el("p", { class: "cempty" }, S.source === "build"
+    ? "No line-by-line measurements from this server yet. See the Abstract, Rooms and Doors & windows tabs."
+    : "No measurements yet. Build the book from the Review step.")];
+  const vis = rows.filter((r) => (!S.trade || r.trade === S.trade) && (S.status === "all" || r.chip === S.status)
+    && match(q, r.item, r.desc, r.location, r.remarks, r.trade, r.sno, r.floor_group));
+  S.shown = vis.length;
+  if (!vis.length) return [el("p", { class: "cempty" }, "No lines match. Clear the search or filters.")];
+  const trades = [...new Set(vis.map((r) => r.trade))];
+  let budget = shownLimit(), left = 0;
+  const out = trades.map((trade) => {
+    const tr = vis.filter((r) => r.trade === trade);
+    const items = [...new Set(tr.map((r) => r.item))];
+    const t = tradeOf(trade);
+    return group(trade, trade, `${items.length} item${items.length > 1 ? "s" : ""} · ${tr.length} lines${sumLine(tr)}`, t.p, () => {
+      const kids = [];
+      for (const item of items) {
+        const lines = tr.filter((r) => r.item === item);
+        if (budget <= 0) { left += lines.length; continue; }
+        const all = S.mb._itemRows.get(item) || lines;
+        const a = S.mb.abstract.find((x) => x.item === item);
+        const total = all.reduce((acc, x) => acc + (x.qty || 0), 0);
+        const head = [el("span", { class: "k-head" }, el("span", { class: "k-sno" }, lines[0].item_sno ?? ""), el("span", { class: "k-desc" }, item)),
+          lines[0].code ? el("span", { class: "k-loc" }, lines[0].code) : null,
+          el("span", { class: "k-f" }, "Item total ", el("b", {}, fq(total)), ` ${unit(all[0]?.unit)} · ${all.length} line${all.length > 1 ? "s" : ""}`)];
+        kids.push(a ? card("abstract", String(a.sno), { cls: "item", tc: t.p, main: head, side: [chip(worstOf(all))] })
+          : el("div", { class: "card item", style: { "--tc": t.p } }, el("div", { class: "k-main" }, head), el("div", { class: "k-side" }, chip(worstOf(all)))));
+        for (const r of lines) {
+          if (budget-- <= 0) { left++; continue; }
+          const fg = r.floor_group && !String(r.location || "").includes(r.floor_group) ? r.floor_group : "";
+          const loc = [r.desc ? r.location : "", fg].filter(Boolean).join(" · ");
+          const c = card("row", r.id, { cls: "row", tc: t.p, neg: (r.nos ?? 1) < 0 || r.qty < 0,
+            main: [el("span", { class: "k-head" }, el("span", { class: "k-sno" }, r.sno), el("span", { class: "k-desc" }, r.desc || r.location || "—")),
+              loc ? el("span", { class: "k-loc" }, loc) : null, formula(r)],
+            side: [chip(r.chip || r.status), flagBadge(r)] });
+          if (S.linked.has(r.id)) c.classList.add("linked");
+          kids.push(c);
+        }
+      }
+      return kids;
+    });
+  });
+  if (left) out.push(moreButton(left));
+  return out;
+}
+
+function cardsAbstract() {
+  const q = S.q.toLowerCase();
+  const vis = S.mb.abstract.filter((a) => (!S.trade || a.trade === S.trade) && match(q, a.item, a.trade, a.note));
+  if (!vis.length) return [el("p", { class: "cempty" }, "No abstract items match.")];
+  return [...new Set(vis.map((a) => a.trade))].map((trade) => {
+    const items = vis.filter((a) => a.trade === trade);
+    const t = tradeOf(trade);
+    return group(trade, trade, `${items.length} item${items.length > 1 ? "s" : ""}${sumLine(items)}`, t.p, () => items.map((a) => {
+      const rows = a.row_ids.map(rowById).filter(Boolean);
+      return card("abstract", String(a.sno), { cls: "row", tc: t.p,
+        main: [el("span", { class: "k-head" }, el("span", { class: "k-sno" }, a.sno), el("span", { class: "k-desc" }, a.item)),
+          a.note ? el("span", { class: "k-loc" }, a.note) : null,
+          el("span", { class: "k-f" }, el("b", {}, fq(a.qty)), ` ${unit(a.unit)}${rows.length ? ` · ${rows.length} line${rows.length > 1 ? "s" : ""}` : ""}`)],
+        side: [rows.length ? chip(worstOf(rows)) : null] });
+    }));
+  });
+}
+
+function cardsRooms() {
+  const q = S.q.toLowerCase();
+  const vis = S.mb.rooms.map((r, i) => [r, i]).filter(([r]) => match(q, r.name, r.level, r.label_size, r.check, r.remarks));
+  if (!vis.length) return [el("p", { class: "cempty" }, "No rooms found.")];
+  let total = 0;
+  const out = vis.map(([r, i]) => {
+    const chk = String(r.check || "");
+    const cls = /mismatch|error/i.test(chk) ? "mismatch" : /ok/i.test(chk) ? "ok" : chk ? "note" : "";
+    total += r.area || 0;
+    return card("room", String(i), { cls: "row", tc: "#8f7300",
+      main: [el("span", { class: "k-head" }, el("span", { class: "k-desc" }, r.name)),
+        r.level || r.remarks ? el("span", { class: "k-loc" }, [r.level, r.remarks].filter(Boolean).join(" · ")) : null,
+        el("span", { class: "k-kv" },
+          r.label_size ? el("span", {}, "Label ", el("b", {}, String(r.label_size).replace(/x/i, " × "))) : null,
+          r.measured_l != null ? el("span", {}, "Measured ", el("b", {}, `${fmt(r.measured_l, 0)} × ${fmt(r.measured_b, 0)}`)) : null),
+        r.area != null ? el("span", { class: "k-f" }, "Area ", el("b", {}, fq(r.area)), " m²") : null],
+      side: [cls ? el("span", { class: `chip ${cls}` }, chk) : null] });
+  });
+  out.push(el("div", { class: "ctotal" }, el("span", {}, `${vis.length} rooms (sizes in mm)`), el("span", {}, `${fq(total)} m²`)));
+  return out;
+}
+
+function cardsOpenings() {
+  const q = S.q.toLowerCase();
+  const vis = S.mb.openings.map((o, i) => [o, i]).filter(([o]) => match(q, o.type, o.location, o.description, o.kind));
+  if (!vis.length) return [el("p", { class: "cempty" }, "No doors or windows found.")];
+  const col = tradeOf("Doors & windows").p;
+  let nos = 0, area = 0;
+  for (const [o] of vis) { nos += o.nos || 0; area += o.area || 0; }
+  const out = [...new Set(vis.map(([o]) => o.type))].map((type) => {
+    const same = vis.filter(([o]) => o.type === type);
+    const o0 = same[0][0], n = same.reduce((a, [o]) => a + (o.nos || 0), 0);
+    return group(type, type, `${o0.w ? `${fmt(o0.w, 0)} × ${fmt(o0.h, 0)} mm` : "size unknown"} · ${n} nos`, col, () => same.map(([o, i]) => card("opening", String(i), { cls: "row", tc: col,
+      main: [el("span", { class: "k-head" }, el("span", { class: "k-sno" }, o.type), el("span", { class: "k-desc" }, o.location || "—")),
+        o.description ? el("span", { class: "k-loc" }, o.description) : null,
+        el("span", { class: "k-kv" }, el("span", {}, "W × H ", el("b", {}, o.w ? `${fmt(o.w, 0)} × ${fmt(o.h, 0)}` : "?")),
+          o.sill != null ? el("span", {}, "Sill ", el("b", {}, fmt(o.sill, 0))) : null,
+          el("span", {}, "Nos ", el("b", {}, o.nos ?? "")),
+          o.area != null ? el("span", {}, "Area ", el("b", {}, `${fq(o.area)} m²`)) : null)] })));
+  });
+  out.push(el("div", { class: "ctotal" }, el("span", {}, `${nos} doors, windows and ventilators`), el("span", {}, `${fq(area)} m²`)));
+  return out;
+}
+
+function cardsDims() {
+  const q = S.q.toLowerCase();
+  const vis = S.mb.dimensions.map((d, i) => [d, i]).filter(([d]) => match(q, d.value, d.region, d.layer, d.text));
+  if (!vis.length) return [el("p", { class: "cempty" }, "No dimensions found.")];
+  let budget = shownLimit(), left = 0;
+  const out = [...new Set(vis.map(([d]) => d.region))].map((region) => {
+    const same = vis.filter(([d]) => d.region === region);
+    return group(region || "-", region || "Unassigned", `${same.length} dimensions`, null, () => same.flatMap(([d, i]) => {
+      if (budget-- <= 0) { left++; return []; }
+      return [card("dim", String(i), { cls: "row",
+        main: [el("span", { class: "k-head" }, el("span", { class: "k-desc" }, d.value != null ? `${fmt(d.value, 1)} mm` : "—")),
+          el("span", { class: "k-kv" }, d.text && d.text !== "<>" ? el("span", {}, "Text ", el("b", {}, `“${d.text}”`)) : null, d.layer ? el("span", {}, "Layer ", el("b", {}, d.layer)) : null)] })];
+    }));
+  });
+  if (left) out.push(moreButton(left));
+  return out;
+}
+
+function cardDetail(r) {
+  const flags = r.flag_ids.map((id) => S.mb.flags.find((f) => f.id === id)).filter(Boolean);
+  return el("div", { class: "cdetail" },
+    el("p", {}, el("span", { class: "k" }, "Source"), r.remarks || "No remarks."),
+    r.floor_group ? el("p", {}, el("span", { class: "k" }, "Floor"), r.floor_group) : null,
+    r.l_formula ? el("p", {}, el("span", { class: "k" }, "L"), el("code", {}, `= ${r.l_formula}`)) : null,
+    r.h_formula ? el("p", {}, el("span", { class: "k" }, "H"), el("code", {}, `= ${r.h_formula}`)) : null,
+    el("p", { class: "muted small" }, r.refs.length
+      ? `${r.refs.length} drawing reference${r.refs.length > 1 ? "s" : ""}${r.refs.some((x) => x.handles?.length) ? " (by entity handle)" : " (by area)"}${sheetsNote(r.refs)}`
+      : "No drawing reference for this line."),
+    flags.length ? el("div", { class: "flaglinks" }, flags.map((f) => el("button", {
+      class: "flaglink", type: "button", onclick: () => { A.setTab("flags"); A.select("flag", f.id, { from: "table" }); },
+    }, sevGlyph(f.severity), f.status === "open" ? f.title : `${f.title} (${f.status})`))) : null);
+}
+
+export { card, group };

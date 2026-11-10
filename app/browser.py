@@ -139,10 +139,13 @@ def delete(job_id: str) -> None:
 # ---------------------------------------------------------------- projects (.naap.json)
 
 def export_project(job_id: str) -> str:
-    """One self-contained file: job state, review answers (config) and the geometry; a PDF job
+    """One self-contained file: job state, review answers (config), the geometry and, once the book
+    is built, the result (so the book opens on a phone without running the engine); a PDF job
     also carries the PDF (sheet images and calibration need it). Written to a temp file."""
     d = service.ready(job_id)
     st = jobs.read_state(d)
+    cache, cfgf = d / "mb_result.json", d / "config.json"
+    fresh = cache.exists() and cache.stat().st_mtime >= cfgf.stat().st_mtime
     out = d / "project.naap.json"
     with out.open("w") as fh:
         head = {"format": PROJECT_FORMAT, "version": PROJECT_VERSION, "saved": time.time(),
@@ -152,6 +155,9 @@ def export_project(job_id: str) -> str:
         fh.write((d / "config.json").read_text())
         fh.write(',"geometry":')
         fh.write((d / "geometry.json").read_text())
+        if fresh:
+            fh.write(',"result":')
+            fh.write(cache.read_text())
         if st.get("kind") == "pdf":
             fh.write(',"input_pdf":"')
             fh.write(base64.b64encode((d / "input.pdf").read_bytes()).decode("ascii"))
@@ -184,18 +190,22 @@ def _import_project(path: str) -> dict:
         raise ServiceError(400, "The project file is incomplete (job, config or geometry missing)")
     if kind == "pdf" and not isinstance(data.get("input_pdf"), str):
         raise ServiceError(400, "The project file has no PDF in it")
+    result = data.get("result")
+    has_result = isinstance(result, dict) and isinstance(result.get("rows", result.get("mb")), list)
     job_id, d = jobs.new_job(str(job.get("filename") or "drawing"), "." + kind)
     try:
         (d / "geometry.json").write_text(json.dumps(geo, separators=(",", ":")))
         if kind == "pdf":
             (d / "input.pdf").write_bytes(base64.b64decode(data["input_pdf"], validate=True))
         (d / "config.json").write_text(json.dumps(cfg, indent=1))
+        if has_result:   # written after the config, so GET /mb serves it without running the engine
+            (d / "mb_result.json").write_text(json.dumps(result, separators=(",", ":"), default=str))
     except Exception as exc:
         jobs.delete_job(job_id)
         raise ServiceError(400, f"The project file could not be read ({exc})")
     jobs.update_state(d, status="ready", message="Opened from a project file", size=job.get("size"),
                       timings=job.get("timings") or {}, stats=job.get("stats") or {})
-    return {"id": job_id}
+    return {"id": job_id, "has_result": has_result}
 
 
 # ---------------------------------------------------------------- the routes main.py serves

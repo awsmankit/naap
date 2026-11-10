@@ -42,6 +42,9 @@ tests/private/
 *.mov
 *.mp4
 !docs/media/**
+# app icons and the share image, made from the synthetic sample by scripts/make_icons.py
+!web/icons/*.png
+!web/og.png
 
 # Built GitHub Pages site and its download cache (scripts/build_site.py)
 site/

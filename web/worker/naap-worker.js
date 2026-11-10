@@ -32,25 +32,30 @@ class HttpError extends Error {
 }
 
 // ------------------------------------------------------------------ IndexedDB
+// Private windows (some Firefox and Safari versions) or full disks can refuse IndexedDB: then jobs
+// live in memory only, for this page, instead of failing every call.
 let dbp = null;
 function db() {
-  dbp ??= new Promise((resolve, reject) => {
-    const r = indexedDB.open("naap", 1);
+  dbp ??= new Promise((resolve) => {
+    let r;
+    try { r = indexedDB.open("naap", 1); } catch (e) { console.warn("IndexedDB unavailable, jobs are kept in memory only:", e); resolve(null); return; }
     r.onupgradeneeded = () => { r.result.createObjectStore("jobs"); r.result.createObjectStore("files"); };
     r.onsuccess = () => resolve(r.result);
-    r.onerror = () => reject(r.error);
+    r.onerror = () => { console.warn("IndexedDB unavailable, jobs are kept in memory only:", r.error); resolve(null); };
+    r.onblocked = () => resolve(null);
   });
   return dbp;
 }
 async function tx(store, mode, fn) {
   const d = await db();
+  if (!d) return undefined;
   return new Promise((resolve, reject) => {
     const t = d.transaction(store, mode), s = t.objectStore(store);
     let out;
     const r = fn(s);
     if (r) r.onsuccess = () => { out = r.result; };
     t.oncomplete = () => resolve(out);
-    t.onerror = () => reject(t.error);
+    t.onerror = () => reject(t.error || new Error("IndexedDB refused the write"));
     t.onabort = () => reject(t.error || new Error("IndexedDB transaction aborted"));
   });
 }
@@ -207,7 +212,7 @@ async function hydrate(id) {
     const p = `${d}/${name}`;
     if (exists(p)) continue;
     const f = await idbGet("files", `${id}/${name}`);
-    if (f) writeFile(p, new Uint8Array(await f.data.arrayBuffer()), f.mtime);
+    if (f) writeFile(p, f.data instanceof Blob ? new Uint8Array(await f.data.arrayBuffer()) : new Uint8Array(f.data), f.mtime);
   }
   if (exists(`${d}/input.pdf`)) await pdfSupport();
 }
@@ -221,8 +226,15 @@ function evict(id) {
   if (exists(`${d}/render`)) for (const f of FS().readdir(`${d}/render`)) if (f !== "." && f !== "..") FS().unlink(`${d}/render/${f}`);
 }
 
-/** Save what changed in a job folder since the last save. */
+/** Save what changed in a job folder since the last save (best effort: a browser that refuses
+ *  storage still gets the job for this page). */
+let warnedStore = false;
 async function persist(id) {
+  try { await persistNow(id); } catch (e) {
+    if (!warnedStore) { warnedStore = true; console.warn("Naap: this browser did not let the job be saved (it works until the page closes):", e?.message || e); }
+  }
+}
+async function persistNow(id) {
   const d = `${JOBS}/${id}`;
   if (!exists(`${d}/job.json`)) { await idbDeleteJob(id); return; }
   const jp = `${d}/job.json`;
@@ -236,7 +248,8 @@ async function persist(id) {
     if (!exists(p)) continue;
     const mt = mtimeOf(p);
     if (saved.get(p) === mt) continue;
-    await idbPut("files", `${id}/${name}`, { data: new Blob([FS().readFile(p)]), mtime: mt });
+    // bytes, not a Blob: Safari's private windows (and WebKit's) cannot keep Blobs in IndexedDB
+    await idbPut("files", `${id}/${name}`, { data: FS().readFile(p).buffer, mtime: mt });
     saved.set(p, mt);
   }
 }
@@ -331,11 +344,11 @@ async function processJob(id, ext) {
 async function importProject(buf) {
   await boot();
   FS().writeFile("/import.naap.json", new Uint8Array(buf));
-  const { id } = unwrap(naap.import_project("/import.naap.json"));
-  await hydrate(id);
-  await persist(id);
+  const r = unwrap(naap.import_project("/import.naap.json"));
+  await hydrate(r.id);
+  await persist(r.id);
   await prune();
-  return { id };
+  return r;
 }
 
 // one call at a time: Python is single-threaded and the job files are shared
@@ -346,8 +359,14 @@ function replyError(id, e) {
   if (e instanceof HttpError) { post({ type: "reply", id, status: e.status, body: { detail: e.message } }); return; }
   const msg = String(e?.message || e);
   post({ type: "reply", id, status: 500, body: { detail: msg.split("\n").filter(Boolean).slice(-1)[0] || msg } });
-  if (/fatal error|Aborted\(|out of memory|RuntimeError: unreachable/i.test(msg)) fatal(e);
+  if (OOM.test(msg)) fatal(e);
 }
+
+// Errors outside a call (a failed allocation in a callback, a rejected promise): report them
+// instead of leaving the page waiting.
+const OOM = /fatal error|Aborted\(|out of memory|could not allocate|cannot allocate|allocation failed|RuntimeError: unreachable|memory access out of bounds/i;
+self.addEventListener("error", (e) => { if (OOM.test(String(e.message))) { e.preventDefault(); fatal(e.message); } });
+self.addEventListener("unhandledrejection", (e) => { const m = String(e.reason?.message || e.reason); if (OOM.test(m)) { e.preventDefault(); fatal(m); } });
 
 self.onmessage = (e) => {
   const m = e.data;
@@ -362,7 +381,7 @@ self.onmessage = (e) => {
       enqueue(() => processJob(r.id, r.ext)).catch((err) => {
         const msg = String(err?.message || err);
         try { naap.set_state(r.id, JSON.stringify({ status: "error", error: msg.slice(0, 800) })); } catch { onState({ ...r.state, status: "error", error: msg }); }
-        if (/fatal error|Aborted\(|out of memory/i.test(msg)) fatal(err);
+        if (OOM.test(msg)) fatal(err);
       });
     }, (err) => replyError(m.id, err));
     return;

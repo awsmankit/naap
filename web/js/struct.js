@@ -4,6 +4,7 @@
 import { S, A } from "./state.js";
 import { el, fmt, fq, unionBox, validBox } from "./util.js";
 import { tradeOf } from "./theme.js";
+import { card } from "./ledger.js";
 
 const match = (q, ...xs) => !q || xs.some((x) => x != null && String(x).toLowerCase().includes(q));
 const STEEL_TRADE = "Steel";
@@ -20,7 +21,7 @@ function pickable(node, kind, key, label) {
   node.dataset.key = key;
   node.tabIndex = -1;
   if (label) node.setAttribute("aria-label", label);
-  node.addEventListener("click", (e) => { if (!e.target.closest("button, a, input, form, details > summary")) A.select(kind, key, { from: "table" }); });
+  node.addEventListener("click", (e) => { if (!e.target.closest("button, a, input, form, details > summary")) (S.compact ? A.tapCard : A.select)(kind, key, { from: "table" }); });
   node.addEventListener("mouseenter", () => A.preview(kind, key));
   node.addEventListener("mouseleave", () => A.preview(null));
   S.visible.push({ kind, key });
@@ -71,6 +72,19 @@ export function renderSteel() {
     hbars("By bar diameter", dias.map((d) => ({ label: `Ø${d}`, v: st.by_dia_kg[d], key: String(d) })), st.total_kg),
     hbars("By element", byEl.map((e) => ({ label: e.name, v: e.kg, key: e.name })), st.total_kg, { kind: "steel" }));
 
+  if (S.compact) {
+    const cards = byEl.map((e) => {
+      const n = elementRows(e.name).length;
+      return card("steel", e.name, { cls: "row", tc: tradeOf(STEEL_TRADE).p,
+        main: [el("span", { class: "k-head" }, el("span", { class: "k-desc" }, e.name)),
+          el("span", { class: "k-kv" }, dias.filter((d) => e.m[d]).map((d) => el("span", {}, `Ø${d} `, el("b", {}, `${fmt(e.m[d], 1)} kg`)))),
+          el("span", { class: "k-f" }, "Total ", el("b", {}, fmt(e.kg, 1)), " kg")],
+        side: [n ? el("button", { class: "link", type: "button", onclick: () => A.showRows(elementRows(e.name).map((r) => r.id)) }, `${n} MB lines`) : null] });
+    });
+    return [tiles, charts, el("h3", { class: "pane-h" }, "Steel by element"), ...cards,
+      el("div", { class: "ctotal" }, el("span", {}, "Total"), el("span", {}, `${fmt(st.total_kg, 1)} kg`)),
+      el("p", { class: "pane-note" }, "Weights use d²/162 kg per metre. Tap an element to see it on the drawing.")];
+  }
   // the table view of the same numbers (element x diameter, kg)
   const body = el("tbody");
   for (const e of byEl) {
@@ -165,6 +179,20 @@ export function renderSchedules() {
     if (!rows.length) return;
     shown++;
     const ncol = Math.max(t.columns?.length || 0, ...t.rows.map((r) => r.cells?.length || 0));
+    if (S.compact) {
+      const caption = el("div", { class: "sched-h" },
+        el("h3", {}, t.name), el("span", { class: "muted" }, `${sheetName(t.sheet)} · ${t.rows.length} rows`));
+      pickable(caption, "table", String(ti));
+      const cards = rows.map(([r, ri]) => el("div", { class: "card sched-card" }, el("div", { style: { gridColumn: "1 / -1" } },
+        el("dl", {}, Array.from({ length: ncol }, (_, ci) => {
+          const v = cellText(r.cells?.[ci]);
+          const dd = el("dd", {}, v ?? "");
+          if (v != null && String(v).trim() && String(v).trim() !== "-") pickable(dd, "cell", `${ti}:${ri}:${ci}`, `${t.name}, ${r.label}, ${t.columns?.[ci] || ""}: ${v}`);
+          return [el("dt", {}, t.columns?.[ci] || (ci ? `Column ${ci + 1}` : "Row")), dd];
+        })))));
+      out.push(el("section", { class: "sched" }, caption, ...cards));
+      return;
+    }
     const head = el("tr", {}, Array.from({ length: ncol }, (_, ci) => el("th", { scope: "col" }, t.columns?.[ci] || "")));
     const body = el("tbody", {}, rows.map(([r, ri]) => el("tr", {}, Array.from({ length: ncol }, (_, ci) => {
       const v = cellText(r.cells?.[ci]);
@@ -180,7 +208,7 @@ export function renderSchedules() {
     out.push(sec);
   });
   if (!shown && !sc?.pile) out.push(el("p", { class: "pane-empty" }, tables.length ? "No schedule matches the search." : "No schedules were read from the drawings."));
-  out.unshift(el("p", { class: "pane-note top" }, "Tables read from the drawings. Click a cell to find it on its sheet."));
+  out.unshift(el("p", { class: "pane-note top" }, `Tables read from the drawings. ${S.touch ? "Tap" : "Click"} a cell to find it on its sheet.`));
   return out;
 }
 
@@ -206,7 +234,7 @@ export function renderCalibration() {
   const q = S.q.toLowerCase();
   const sheets = S.geo?.sheets || [];
   const body = el("tbody");
-  const rest = [];
+  const rest = [], cards = [];
   for (const sh of sheets) {
     const c = cal[sh.sheet] || cal[String(sh.sheet)];
     const name = sheetName(sh.sheet), title = sh.title_block?.title || "";
@@ -214,7 +242,24 @@ export function renderCalibration() {
     if (!c) { rest.push(el("li", {}, el("b", {}, name), ` ${title}`)); continue; }
     const weak = c.pt_per_mm == null || c.spread_pct > 3 || c.n < 3;
     const u = user[sh.sheet] || user[String(sh.sheet)];
-    const scaleIn = el("input", { type: "number", min: 1, step: "any", placeholder: c.scale_1_to ? String(Math.round(c.scale_1_to)) : "100", "aria-label": `Scale 1:N for ${name}` });
+    const scaleIn = el("input", { type: "number", min: 1, step: "any", inputmode: "decimal", placeholder: c.scale_1_to ? String(Math.round(c.scale_1_to)) : "100", "aria-label": `Scale 1:N for ${name}` });
+    const status = el("span", { class: `chip ${c.method === "user" || u ? "ok" : weak ? "assumed" : "scaled"}`, title: weak ? "Few samples or wide spread: lengths scaled on this sheet are uncertain" : "" },
+      c.method === "user" || u ? "User" : c.pt_per_mm == null ? "No scale" : weak ? "Weak" : "Consensus");
+    const acts = () => [el("button", { class: "btn", type: "button", onclick: () => A.startCalibrate(sh.sheet) }, "Calibrate…"),
+      el("form", { class: "cal-n", onsubmit: (e) => { e.preventDefault(); const n = Number(scaleIn.value); if (n > 0) A.applyCalibration(sh.sheet, { scale: n }); else scaleIn.focus(); } },
+        el("label", {}, "1:", scaleIn), el("button", { class: "btn", type: "submit" }, "Set")),
+      u ? el("button", { class: "link", type: "button", onclick: () => A.applyCalibration(sh.sheet, null) }, "Clear override") : null];
+    if (S.compact) {
+      const cd = card("calib", String(sh.sheet), { cls: "row",
+        main: [el("span", { class: "k-head" }, el("span", { class: "k-desc" }, name)), title ? el("span", { class: "k-loc" }, title) : null,
+          el("span", { class: "k-kv" }, el("span", {}, "Scale ", el("b", {}, c.scale_1_to ? `1:${fmt(c.scale_1_to, 1)}` : "—")),
+            el("span", {}, "Method ", el("b", {}, c.method || "")), c.n != null ? el("span", {}, "Samples ", el("b", {}, c.n)) : null,
+            c.pt_per_mm != null ? el("span", {}, "Spread ", el("b", {}, `${fmt(c.spread_pct, 2, 2)}%`)) : null)],
+        side: [status] });
+      cd.append(el("div", { class: "k-acts" }, acts()));
+      cards.push(cd);
+      continue;
+    }
     const tr = el("tr", { class: "row" },
       el("td", { class: "desc" }, name, el("small", {}, title)),
       el("td", { class: "loc" }, c.method || "", c.user_override ? el("small", {}, `override ${c.user_override}`) : null),
@@ -222,13 +267,8 @@ export function renderCalibration() {
       el("td", { class: "num" }, c.pt_per_mm ? fmt(c.pt_per_mm, 5) : ""),
       el("td", { class: "num" }, c.n ?? ""),
       el("td", { class: "num" }, c.pt_per_mm == null ? "" : `${fmt(c.spread_pct, 2, 2)}%`),
-      el("td", { class: "c-st" }, el("span", { class: `chip ${c.method === "user" || u ? "ok" : weak ? "assumed" : "scaled"}`, title: weak ? "Few samples or wide spread: lengths scaled on this sheet are uncertain" : "" },
-        c.method === "user" || u ? "User" : c.pt_per_mm == null ? "No scale" : weak ? "Weak" : "Consensus")),
-      el("td", { class: "cal-act" },
-        el("button", { class: "btn", type: "button", onclick: () => A.startCalibrate(sh.sheet) }, "Calibrate…"),
-        el("form", { class: "cal-n", onsubmit: (e) => { e.preventDefault(); const n = Number(scaleIn.value); if (n > 0) A.applyCalibration(sh.sheet, { scale: n }); else scaleIn.focus(); } },
-          el("label", {}, "1:", scaleIn), el("button", { class: "btn", type: "submit" }, "Set")),
-        u ? el("button", { class: "link", type: "button", onclick: () => A.applyCalibration(sh.sheet, null) }, "Clear override") : null));
+      el("td", { class: "c-st" }, status),
+      el("td", { class: "cal-act" }, acts()));
     body.append(pickable(tr, "calib", String(sh.sheet)));
   }
   const table = el("table", { class: "mb cal-t" },
@@ -237,7 +277,7 @@ export function renderCalibration() {
   const out = [
     el("p", { class: "pane-note top" }, "The sheets are NOT TO SCALE, so lengths that are not written are scaled with a per-sheet calibration ",
       "taken from written dimensions and scheduled element sizes. To calibrate a sheet yourself, pick two points on the drawing and enter the real length between them. The book is then rebuilt."),
-    table,
+    ...(S.compact ? cards : [table]),
   ];
   if (rest.length) out.push(el("h3", { class: "pane-h" }, "Sheets with nothing scaled"), el("ul", { class: "pane-list" }, rest));
   return out;
@@ -257,8 +297,9 @@ export function calibDetail(n) {
       el("span", { class: "num" }, med ? `${dev >= 0 ? "+" : "−"}${fmt(Math.abs(dev), 2, 2)}%` : ""));
     return pickable(li, "sample", `${n}:${k}`);
   }));
-  return el("tr", { class: "detail" }, el("td", { colspan: 8 },
-    el("p", { class: "muted small" }, `${c.n} samples by ${c.method}${c.samples.length > 24 ? ` (first 24 of ${c.samples.length} shown)` : ""}. Deviation is from the consensus.`), list));
+  const note = el("p", { class: "muted small" }, `${c.n} samples by ${c.method}${c.samples.length > 24 ? ` (first 24 of ${c.samples.length} shown)` : ""}. Deviation is from the consensus.`);
+  if (S.compact) return el("div", { class: "cdetail" }, note, list);
+  return el("tr", { class: "detail" }, el("td", { colspan: 8 }, note, list));
 }
 
 // ================================================================ drawing groups for these tabs

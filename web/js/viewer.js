@@ -42,6 +42,8 @@ export class Viewer {
     this.unitMM = null;        // drawing units per real mm (pt sheets: pt/mm of the calibration)
     this.scaleMM = null;       // pt per real mm of the shown sheet, for the scale bar
     this.insetTop = 0;         // screen px covered by overlays at the top (sheet strip)
+    this.insetBottom = 0;      // ... and at the bottom (the phone's full-screen summary)
+    this.loupe = null;         // touch calibration magnifier {fx, fy, p: {w, sx, sy}}
     this.raster = { on: false, url: null, base: new Map(), detail: null, want: null };
     this.measure = null;       // {p1, p2, hover} while calibrating
     this.marks = [];           // [{x, y, color}] small markers (calibration samples)
@@ -381,10 +383,10 @@ export class Viewer {
   }
   _target(b, pad = 1.12, minW = 0) {
     const bw = Math.max(b[2] - b[0], 1), bh = Math.max(b[3] - b[1], 1);
-    const top = Math.min(this.insetTop, this.H * 0.4), Hv = this.H - top;
+    const top = Math.min(this.insetTop, this.H * 0.4), bot = Math.min(this.insetBottom || 0, this.H * 0.4), Hv = this.H - top - bot;
     const w = Math.max(bw, bh * this.W / Hv, minW) * pad;
-    // centre the box in the part of the canvas below the top overlay
-    return { cx: (b[0] + b[2]) / 2, cy: (b[1] + b[3]) / 2 + (top / 2) * (w / this.W), w };
+    // centre the box in the part of the canvas between the top and bottom overlays
+    return { cx: (b[0] + b[2]) / 2, cy: (b[1] + b[3]) / 2 + ((top - bot) / 2) * (w / this.W), w };
   }
 
   fit(b = this.home, animate = true, pad = 1.08) {
@@ -518,6 +520,7 @@ export class Viewer {
     if (this.showRegions && !this.sheets.length) this._regions(ctx);
     if (this.showMarkers) this._flags(ctx);
     if (this.groups[0]?.label) this._label(ctx, this.groups[0], fade);
+    if (this.loupe) this._loupe(ctx, dpr);
     this._minimap();
     this._scale();
   }
@@ -598,9 +601,9 @@ export class Viewer {
     ctx.fillStyle = "#f4f9fc"; ctx.textAlign = "center"; ctx.textBaseline = "middle"; ctx.fillText(label, mx, my);
   }
 
-  /** Nearest drawn vertex within 10 px of a screen point (for calibration). */
-  snap(sx, sy) {
-    const [wx, wy] = this.toWorld(sx, sy), tol = 10 / this.s;
+  /** Nearest drawn vertex within tolPx (10) px of a screen point (for calibration). */
+  snap(sx, sy, tolPx = 10) {
+    const [wx, wy] = this.toWorld(sx, sy), tol = tolPx / this.s;
     let best = null, bd = tol;
     for (const i of this.query([wx - tol, wy - tol, wx + tol, wy + tol])) {
       const e = this.E[i];
@@ -692,7 +695,9 @@ export class Viewer {
     const w = Math.max(tw, sw) + 26, h = sub ? 52 : 34;
     let x = X1 + 26, y = Y0 - 26 - h;
     x = clamp(x, 8, this.W - w - 240 > 8 ? this.W - w - 8 : this.W - w - 8);
-    y = clamp(y, 8, this.H - h - 170);
+    // keep clear of the minimap (hidden on phones) and of a bottom overlay
+    const reserve = (this.mini.offsetParent ? 170 : 40) + (this.insetBottom || 0);
+    y = clamp(y, 8, this.H - h - reserve);
     ctx.globalAlpha = fade;
     // leader
     ctx.strokeStyle = g.color; ctx.lineWidth = 1.25;
@@ -794,6 +799,7 @@ export class Viewer {
   }
 
   _minimap() {
+    if (!this.mini.width || !this.mini.height) return;   // hidden (phones)
     if (this._miniDirty) this._miniRender();
     const c = this.mctx, m = this.mini;
     c.setTransform(1, 0, 0, 1, 0, 0);
@@ -839,9 +845,9 @@ export class Viewer {
   }
 
   // ------------------------------------------------------------ picking
-  pick(sx, sy) {
+  pick(sx, sy, tolPx = 6) {
     const [wx, wy] = this.toWorld(sx, sy);
-    const tol = 6 / this.s;
+    const tol = tolPx / this.s;
     let best = -1, bd = Infinity, ba = Infinity;
     const eb = this.eb;
     for (const i of this.query([wx - tol, wy - tol, wx + tol, wy + tol])) {
@@ -865,61 +871,192 @@ export class Viewer {
   }
 
   // ------------------------------------------------------------ input
+  /** A click or tap at screen point (sx, sy): calibration point, flag marker, region, entity. */
+  _tap(sx, sy, touch) {
+    if (this.measure) {
+      const p = this.snap(sx, sy, touch ? 22 : 10) || this.toWorld(sx, sy);
+      this._emit("measure", p, sx, sy);
+      return;
+    }
+    if (this.showMarkers) {
+      for (const { f, p } of this._markers().reverse()) {
+        const [x, y] = this.toScreen(p[0], p[1]);
+        if (Math.hypot(x - sx, y - sy) <= (touch ? 22 : 12)) { this._emit("flag", f.id); return; }
+      }
+    }
+    if (this.showRegions && this.callbacks.region) {
+      const [wx, wy] = this.toWorld(sx, sy);
+      let best = null, area = Infinity;
+      for (const g of this.regions) {
+        const b = g.bbox;
+        if (wx >= b[0] && wx <= b[2] && wy >= b[1] && wy <= b[3] && (b[2] - b[0]) * (b[3] - b[1]) < area) { best = g.id; area = (b[2] - b[0]) * (b[3] - b[1]); }
+      }
+      this._emit("region", best);
+    }
+    this._emit("pick", this.pick(sx, sy, touch ? 16 : 6), sx, sy);
+  }
+
+  /** Zoom by factor f around a screen point (animated unless reduced motion). */
+  zoomAt(sx, sy, f) {
+    const [wx, wy] = this.toWorld(sx, sy);
+    const v = this._view();
+    const w = v.w / f;
+    // the point under the finger stays put
+    const cx = wx - (sx - this.W / 2) * (w / this.W), cy = wy + (sy - this.H / 2) * (w / this.W);
+    if (reducedMotion()) { this._setView(cx, cy, w); this.draw(); return; }
+    this.flyTo({ cx, cy, w });
+  }
+
+  /** Touch calibration: the target is 72 px above the finger (snapped), shown in a loupe. */
+  _aim(fx, fy) {
+    const sx = fx, sy = Math.max(4, fy - 72);
+    const w = this.snap(sx, sy, 18) || this.toWorld(sx, sy);
+    const [px, py] = this.toScreen(w[0], w[1]);
+    this.loupe = { fx, fy, p: { w, sx: px, sy: py } };
+    this.measure.hover = w;
+    this.measure.snap = null;
+    this.draw();
+  }
+
+  /** The magnifier: the canvas around the target point, 3x, in a circle away from the finger. */
+  _loupe(ctx, dpr) {
+    const L = this.loupe;
+    if (!L) return;
+    const { sx, sy } = L.p, R = 58, k = 3;
+    let cx = sx, cy = sy - R - 34;
+    if (cy - R < 4) { cy = sy + R + 34; cx = sx + (sx < this.W / 2 ? R + 40 : -R - 40); }
+    cx = clamp(cx, R + 4, this.W - R - 4);
+    const src = this._loupeCanvas || (this._loupeCanvas = document.createElement("canvas"));
+    const size = Math.round((2 * R / k) * dpr);
+    src.width = size; src.height = size;
+    src.getContext("2d").drawImage(this.canvas, Math.round((sx - R / k) * dpr), Math.round((sy - R / k) * dpr), size, size, 0, 0, size, size);
+    ctx.save();
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.beginPath(); ctx.arc(cx, cy, R, 0, Math.PI * 2);
+    ctx.fillStyle = "#0d2233"; ctx.fill();
+    ctx.save(); ctx.clip();
+    ctx.imageSmoothingEnabled = false;
+    ctx.drawImage(src, cx - R, cy - R, 2 * R, 2 * R);
+    ctx.restore();
+    ctx.strokeStyle = "#e9c46a"; ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.arc(cx, cy, R, 0, Math.PI * 2); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(cx - 14, cy); ctx.lineTo(cx - 4, cy); ctx.moveTo(cx + 4, cy); ctx.lineTo(cx + 14, cy);
+    ctx.moveTo(cx, cy - 14); ctx.lineTo(cx, cy - 4); ctx.moveTo(cx, cy + 4); ctx.lineTo(cx, cy + 14); ctx.stroke();
+    // a crosshair on the target itself and a thin line down to the finger
+    ctx.lineWidth = 1.5;
+    ctx.beginPath(); ctx.moveTo(sx - 16, sy); ctx.lineTo(sx + 16, sy); ctx.moveTo(sx, sy - 16); ctx.lineTo(sx, sy + 16); ctx.stroke();
+    ctx.setLineDash([2, 4]); ctx.strokeStyle = "rgba(233,196,106,.6)";
+    ctx.beginPath(); ctx.moveTo(sx, sy + 18); ctx.lineTo(L.fx, L.fy - 24); ctx.stroke(); ctx.setLineDash([]);
+    ctx.restore();
+  }
+
   _bind() {
     const c = this.canvas;
-    let drag = null;
+    // pointers: mouse drag pans; one finger pans, two fingers pinch-zoom (and pan); a tap picks.
+    // Touch taps wait a moment so a double tap can zoom in instead.
+    const pts = new Map();          // pointerId -> {x, y} (client px)
+    let drag = null, pinch = null, lastTap = null, tapT = 0;
+    const local = (ev) => { const r = c.getBoundingClientRect(); return [ev.clientX - r.left, ev.clientY - r.top]; };
+    const startPinch = () => {
+      const [a, b] = [...pts.values()];
+      const r = c.getBoundingClientRect();
+      const mx = (a.x + b.x) / 2 - r.left, my = (a.y + b.y) / 2 - r.top;
+      pinch = { d: Math.max(10, Math.hypot(a.x - b.x, a.y - b.y)), s: this.s, w: this.toWorld(mx, my) };
+      if (drag) drag.moved = true;
+      this.loupe = null;
+    };
     c.addEventListener("pointerdown", (ev) => {
-      if (ev.button !== 0 && ev.button !== 1) return;
-      c.setPointerCapture(ev.pointerId);
-      drag = { x: ev.clientX, y: ev.clientY, tx: this.tx, ty: this.ty, moved: false };
+      if (ev.pointerType === "mouse" && ev.button !== 0 && ev.button !== 1) return;
+      c.setPointerCapture?.(ev.pointerId);
+      pts.set(ev.pointerId, { x: ev.clientX, y: ev.clientY });
       this._anim = null;
+      if (pts.size === 2) { startPinch(); return; }
+      if (pts.size > 2) return;
+      const touch = ev.pointerType !== "mouse";
+      drag = { x: ev.clientX, y: ev.clientY, tx: this.tx, ty: this.ty, moved: false, touch, id: ev.pointerId, t: performance.now() };
+      // calibrating by touch: the point sits above the finger, with a magnifier, until it lifts
+      if (touch && this.measure && !this.measure.p2) { drag.aim = true; this._aim(...local(ev)); }
     });
     c.addEventListener("pointermove", (ev) => {
-      const r = c.getBoundingClientRect();
-      if (drag) {
+      const [lx, ly] = local(ev);
+      if (pts.has(ev.pointerId)) pts.set(ev.pointerId, { x: ev.clientX, y: ev.clientY });
+      if (pinch && pts.size >= 2) {
+        const [a, b] = [...pts.values()];
+        const r = c.getBoundingClientRect();
+        const mx = (a.x + b.x) / 2 - r.left, my = (a.y + b.y) / 2 - r.top;
+        const d = Math.max(10, Math.hypot(a.x - b.x, a.y - b.y));
+        this.s = pinch.s * (d / pinch.d);
+        // keep the world point that was under the fingers under their midpoint
+        this.tx = mx - (pinch.w[0] - this.ox) * this.s;
+        this.ty = my + (pinch.w[1] - this.oy) * this.s;
+        this.draw();
+        return;
+      }
+      if (drag && ev.pointerId === drag.id) {
         const dx = ev.clientX - drag.x, dy = ev.clientY - drag.y;
-        if (!drag.moved && Math.abs(dx) + Math.abs(dy) > 4) { drag.moved = true; c.classList.add("grab"); }
+        if (drag.aim) { this._aim(lx, ly); return; }
+        if (!drag.moved && Math.abs(dx) + Math.abs(dy) > (drag.touch ? 10 : 4)) { drag.moved = true; c.classList.add("grab"); }
         if (drag.moved) { this.tx = drag.tx + dx; this.ty = drag.ty + dy; this.draw(); }
       }
-      const [wx, wy] = this.toWorld(ev.clientX - r.left, ev.clientY - r.top);
+      if (ev.pointerType !== "mouse" && !drag) return;
+      const [wx, wy] = this.toWorld(lx, ly);
       this._emit("coords", wx, wy);
-      if (this.measure && !this.measure.p2 && !drag?.moved) {
-        const sn = this.snap(ev.clientX - r.left, ev.clientY - r.top);
+      if (ev.pointerType === "mouse" && this.measure && !this.measure.p2 && !drag?.moved) {
+        const sn = this.snap(lx, ly);
         this.measure.snap = sn;
         this.measure.hover = sn || [wx, wy];
         this.draw();
       }
     });
-    c.addEventListener("pointerup", (ev) => {
-      if (!drag) return;
-      c.classList.remove("grab");
-      const moved = drag.moved;
-      drag = null;
-      if (moved) return;
-      const r = c.getBoundingClientRect();
-      const sx = ev.clientX - r.left, sy = ev.clientY - r.top;
-      if (this.measure) {
-        const p = this.snap(sx, sy) || this.toWorld(sx, sy);
-        this._emit("measure", p, sx, sy);
+    const end = (ev, cancelled) => {
+      const had = pts.delete(ev.pointerId);
+      if (pinch) {
+        if (pts.size < 2) {
+          pinch = null;
+          // carry on panning with the finger that stays, without a jump
+          const rest = [...pts.entries()][0];
+          if (rest) drag = { x: rest[1].x, y: rest[1].y, tx: this.tx, ty: this.ty, moved: true, touch: true, id: rest[0] };
+          else drag = null;
+        }
         return;
       }
-      if (this.showMarkers) {
-        for (const { f, p } of this._markers().reverse()) {
-          const [x, y] = this.toScreen(p[0], p[1]);
-          if (Math.hypot(x - sx, y - sy) <= 12) { this._emit("flag", f.id); return; }
+      if (!had || !drag || ev.pointerId !== drag.id) return;
+      c.classList.remove("grab");
+      const d = drag;
+      drag = null;
+      const [sx, sy] = local(ev);
+      if (d.aim) {
+        const p = this.loupe?.p;
+        this.loupe = null;
+        if (this.measure) {
+          if (this.measure.p1) this.measure.hover = null;
+          this.measure.snap = null;
         }
+        this.draw();
+        if (!cancelled && p) this._emit("measure", p.w, p.sx, p.sy);
+        return;
       }
-      if (this.showRegions && this.callbacks.region) {
-        const [wx, wy] = this.toWorld(sx, sy);
-        let best = null, area = Infinity;
-        for (const g of this.regions) {
-          const b = g.bbox;
-          if (wx >= b[0] && wx <= b[2] && wy >= b[1] && wy <= b[3] && (b[2] - b[0]) * (b[3] - b[1]) < area) { best = g.id; area = (b[2] - b[0]) * (b[3] - b[1]); }
+      if (d.moved || cancelled) return;
+      if (d.touch) {
+        // double tap zooms in (x2) around the finger; a single tap picks after a short wait
+        const now = performance.now();
+        if (lastTap && now - lastTap.t < 320 && Math.hypot(sx - lastTap.x, sy - lastTap.y) < 36) {
+          clearTimeout(tapT); lastTap = null;
+          this.zoomAt(sx, sy, 2);
+          return;
         }
-        this._emit("region", best);
+        lastTap = { t: now, x: sx, y: sy };
+        clearTimeout(tapT);
+        tapT = setTimeout(() => { lastTap = null; this._tap(sx, sy, true); }, 280);
+        return;
       }
-      this._emit("pick", this.pick(sx, sy), sx, sy);
-    });
+      this._tap(sx, sy, false);
+    };
+    c.addEventListener("pointerup", (ev) => end(ev, false));
+    c.addEventListener("pointercancel", (ev) => end(ev, true));
+    // Safari's own pinch gestures must not zoom the page over the canvas
+    for (const t of ["gesturestart", "gesturechange"]) c.addEventListener(t, (e) => e.preventDefault());
+    c.addEventListener("contextmenu", (e) => { if (pts.size) e.preventDefault(); });
     c.addEventListener("wheel", (ev) => {
       ev.preventDefault();
       this._anim = null;

@@ -63,4 +63,5 @@ def test_branding_and_sample_links():
 def test_ui_has_no_absolute_paths_or_cdns():
     for f in [WEB / "index.html", WEB / "css" / "app.css", *JS]:
         s = f.read_text()
-        assert not re.search(r"/Users/|/tmp/|https?://(?!www\.w3\.org)", s), f.name
+        # index.html may name the site's own address (Open Graph tags need absolute URLs)
+        assert not re.search(r"/Users/|/tmp/|https?://(?!www\.w3\.org" + (r"|awsmankit\.github\.io/naap/" if f.name == "index.html" else "") + ")", s), f.name

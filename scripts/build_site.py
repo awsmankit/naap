@@ -226,8 +226,38 @@ def build(out: Path, cache: Path, with_vendor: bool = True) -> dict:
         "meta": {**service.meta(), "runtime": "browser"},
     }
     (out / "worker" / "assets.json").write_text(json.dumps(manifest, indent=1))
+    build_id = stamp_sw(out)
     total = sum(f.stat().st_size for f in out.rglob("*") if f.is_file())
-    return {"total": total, "first_load": manifest["runtime_bytes"], **{k: v for k, v in sizes.items() if k != "versions"}}
+    return {"total": total, "first_load": manifest["runtime_bytes"], "build": build_id, **{k: v for k, v in sizes.items() if k != "versions"}}
+
+
+# What the service worker (web/sw.js) caches on install: the app shell, our Python and the sample.
+# The runtime under vendor/ is cached when the engine first loads it, never up front.
+SW_PRECACHE = ["config.js", "manifest.webmanifest", "css/*.css", "js/*.js", "worker/*.js", "worker/assets.json",
+               "fonts/*.woff2", "icons/*", "py/naap.zip", "samples/sample-house.dxf"]
+
+
+def stamp_sw(out: Path) -> str:
+    """Write the build's version and shell list into sw.js. Any change to the site gives a new
+    sw.js, so browsers install it and drop the old caches; vendor/ has its own hash (its cache
+    survives releases that do not change the runtime). Returns the build id."""
+    sw = out / "sw.js"
+    build, vend = hashlib.sha256(), hashlib.sha256()
+    for f in sorted(p for p in out.rglob("*") if p.is_file() and p != sw):
+        rel = f.relative_to(out).as_posix()
+        line = f"{rel}\0{sha256(f.read_bytes())}\n".encode()
+        build.update(line)
+        if rel.startswith("vendor/"):
+            vend.update(line)
+    shell = ["./"] + sorted({f.relative_to(out).as_posix() for pat in SW_PRECACHE for f in out.glob(pat) if f.is_file()})
+    text = sw.read_text()
+    for key, val in (('"__NAAP_BUILD__"', json.dumps(build.hexdigest()[:16])),
+                     ('"__NAAP_VENDOR__"', json.dumps(vend.hexdigest()[:16])),
+                     ('["__NAAP_PRECACHE__"]', json.dumps(shell))):
+        assert key in text, f"web/sw.js lost its {key} placeholder"
+        text = text.replace(key, val)
+    sw.write_text(text)
+    return build.hexdigest()[:16]
 
 
 def serve(out: Path, port: int) -> None:
@@ -236,7 +266,8 @@ def serve(out: Path, port: int) -> None:
 
     class H(SimpleHTTPRequestHandler):
         extensions_map = {**SimpleHTTPRequestHandler.extensions_map, ".js": "text/javascript", ".mjs": "text/javascript",
-                          ".wasm": "application/wasm", ".json": "application/json", ".woff2": "font/woff2"}
+                          ".wasm": "application/wasm", ".json": "application/json", ".woff2": "font/woff2",
+                          ".webmanifest": "application/manifest+json"}
 
     class S(ThreadingHTTPServer):
         request_queue_size = 64   # the worker fetches the runtime files in parallel

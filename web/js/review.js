@@ -74,12 +74,12 @@ function layers() {
   draw();
   return [
     el("div", { class: "rv-tools" }, filter, el("label", {}, onlyRoles, "Measured only")),
-    el("table", { class: "plain" }, el("thead", {}, el("tr", {}, el("th", {}, el("span", { class: "sr" }, "")), el("th", {}, "Layer"), el("th", {}, "Items"), el("th", {}, "Role"))), tbody),
+    el("table", { class: "plain" }, el("thead", {}, el("tr", {}, el("th", {}, el("span", { class: "sr-only" }, "Show")), el("th", {}, "Layer"), el("th", {}, "Items"), el("th", {}, "Role"))), tbody),
   ];
 }
 
-function numIn(obj, key, step = 10) {
-  return el("input", { type: "number", min: 0, step, value: obj[key] ?? "", inputmode: "decimal",
+function numIn(obj, key, step = 10, label = key) {
+  return el("input", { type: "number", min: 0, step, value: obj[key] ?? "", inputmode: "decimal", "aria-label": label, enterkeyhint: "done",
     oninput: (e) => { obj[key] = e.target.value === "" ? null : Number(e.target.value); A.cfgChanged(); } });
 }
 
@@ -89,14 +89,14 @@ function heights() {
   const walls = ["wall-brick", "wall-AAC", "parapet"].map((role) => {
     c.walls[role] = c.walls[role] || { thickness_mm: 230, height_mm: 3000 };
     return el("tr", {}, el("td", {}, el("span", { class: "swatch-role", style: { background: ROLE_SWATCH[role] } }), role),
-      el("td", {}, numIn(c.walls[role], "thickness_mm", 5)), el("td", {}, numIn(c.walls[role], "height_mm", 50)));
+      el("td", {}, numIn(c.walls[role], "thickness_mm", 5, `${role} thickness, mm`)), el("td", {}, numIn(c.walls[role], "height_mm", 50, `${role} height, mm`)));
   });
   c.column = c.column || { height_mm: 3000 };
   const lv = c.levels = c.levels || [];
   const levelBody = el("tbody");
   const drawLevels = () => levelBody.replaceChildren(...lv.map((l, i) => el("tr", {},
     el("td", {}, el("input", { type: "text", value: l.name, "aria-label": "Level name", onchange: (e) => { l.name = e.target.value; A.cfgChanged(); } })),
-    el("td", {}, numIn(l, "level_mm", 50)),
+    el("td", {}, numIn(l, "level_mm", 50, `${l.name} level, mm`)),
     el("td", {}, el("button", { class: "link", type: "button", "aria-label": `Remove ${l.name}`, onclick: () => { lv.splice(i, 1); drawLevels(); A.cfgChanged(); } }, "Remove")))));
   drawLevels();
   return [
@@ -105,10 +105,10 @@ function heights() {
       el("table", { class: "plain" }, el("thead", {}, el("tr", {}, el("th", {}, "Wall type"), el("th", {}, "Thickness mm"), el("th", {}, "Height mm"))), el("tbody", {}, walls))),
     el("div", { class: "rv-section" }, el("h3", {}, "Columns and slab"),
       el("table", { class: "plain" }, el("tbody", {},
-        el("tr", {}, el("td", {}, "Column height mm"), el("td", {}, numIn(c.column, "height_mm", 50))),
-        el("tr", {}, el("td", {}, "Slab thickness mm"), el("td", {}, numIn(c, "slab_thickness_mm", 5)))))),
+        el("tr", {}, el("td", {}, "Column height mm"), el("td", {}, numIn(c.column, "height_mm", 50, "Column height, mm"))),
+        el("tr", {}, el("td", {}, "Slab thickness mm"), el("td", {}, numIn(c, "slab_thickness_mm", 5, "Slab thickness, mm")))))),
     el("div", { class: "rv-section" }, el("h3", {}, "Levels"),
-      el("table", { class: "plain" }, el("thead", {}, el("tr", {}, el("th", {}, "Name"), el("th", {}, "Level mm"), el("th", {}, ""))), levelBody),
+      el("table", { class: "plain" }, el("thead", {}, el("tr", {}, el("th", {}, "Name"), el("th", {}, "Level mm"), el("th", {}, el("span", { class: "sr-only" }, "Remove")))), levelBody),
       el("p", {}, el("button", { class: "link", type: "button", onclick: () => {
         const last = lv.length ? lv[lv.length - 1].level_mm || 0 : 0;
         lv.push({ name: `Level ${lv.length + 1}`, level_mm: last + 3300 }); drawLevels(); A.cfgChanged();

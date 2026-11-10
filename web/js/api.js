@@ -11,6 +11,7 @@
 
 import { CONFIG } from "../config.js";
 import { guessTrade } from "./theme.js";
+import { OOM_RE, oomMessage } from "./guard.js";
 
 const params = new URLSearchParams(location.search);
 export const MOCK = params.get("mock") === "1";
@@ -50,11 +51,14 @@ class LocalEngine {
   crash(why) {
     this.w?.terminate();
     this.w = null;
-    for (const [, p] of this.pending) p.reject(new ApiError(`The in-browser engine stopped (${why}). Your jobs are kept in this browser; try again, or use the server version for very large drawings.`, 500));
+    booted = false;
+    const oom = OOM_RE.test(String(why));
+    const msg = oom ? oomMessage() : `The in-browser engine stopped (${why}). Your jobs are kept in this browser; try again, or use the server version for very large drawings.`;
+    for (const [, p] of this.pending) p.reject(Object.assign(new ApiError(msg, 500), { oom }));
     this.pending.clear();
     for (const id of this.busy) {
       const st = this.state.get(id);
-      if (st) this.state.set(id, { ...st, status: "error", error: `The in-browser engine stopped while reading this drawing (${why}). It may be too large for the browser: try the server version.` });
+      if (st) this.state.set(id, { ...st, status: "error", error: oom ? oomMessage() : `The in-browser engine stopped while reading this drawing (${why}). It may be too large for the browser: try the server version.` });
     }
     this.busy.clear();
   }
@@ -91,7 +95,17 @@ class LocalEngine {
       const st = this.state.get(id);
       return { ...st, elapsed_s: Math.round((Date.now() / 1000 - st.created) * 10) / 10 };
     }
-    return unpack(await this.send({ type: "call", method, url: path, body }));
+    const out = unpack(await this.send({ type: "call", method, url: path, body }));
+    // a job left half-read by a closed, reloaded or crashed page: the worker that read it is gone
+    if (method === "GET" && path === "/api/jobs" && Array.isArray(out)) return out.map((j) => this.orphan(j));
+    if (method === "GET" && id && out && typeof out === "object") return this.orphan(out);
+    return out;
+  }
+
+  orphan(st) {
+    if (!st || this.busy.has(st.id) || ["ready", "error"].includes(st.status)) return st;
+    return { ...st, status: "error", interrupted: true,
+      error: "This drawing was still being read when the page was closed, reloaded or stopped, so it was not finished. Open the file again to start over." };
   }
 }
 
@@ -107,8 +121,11 @@ function unpack(r) {
 const engine = LOCAL ? new LocalEngine() : null;
 
 /** Start loading the in-browser engine early (e.g. when a file is dragged in). */
+let booted = false;
 export function warmup() {
-  engine?.start().postMessage({ type: "warmup" });
+  if (!engine || booted) return;
+  booted = true;
+  engine.start().postMessage({ type: "warmup" });
 }
 
 // ------------------------------------------------------------------ the API
@@ -223,7 +240,7 @@ export async function saveProject(id) {
   saveBlob(blob, blob.filename || "drawing.naap.json");
 }
 
-/** Open a saved .naap.json as a new job. Resolves {id}. */
+/** Open a saved .naap.json as a new job. Resolves {id, has_result} (has_result: the book is in the file). */
 export async function openProject(file, onProgress = () => {}) {
   if (!CAN_PROJECTS) throw new ApiError("Projects are opened by the in-browser version only.", 400);
   engine.onProgress = onProgress;

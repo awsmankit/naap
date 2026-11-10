@@ -95,8 +95,16 @@ def test_browser_service_round_trip(tmp_path, monkeypatch):
     proj = call("GET", f"/api/jobs/{jid}/project")
     copy = tmp_path / "copy.naap.json"
     shutil.copy(proj["file"], copy)
-    new = json.loads(browser.import_project(str(copy)))["body"]["id"]
-    assert new != jid and call("GET", f"/api/jobs/{new}")["body"]["status"] == "ready"
+    saved = json.loads(copy.read_text())
+    assert {"config", "geometry", "result", "job"} <= set(saved) and len(saved["result"]["rows"]) == 57
+    opened = json.loads(browser.import_project(str(copy)))["body"]
+    new = opened["id"]
+    assert opened["has_result"] and new != jid and call("GET", f"/api/jobs/{new}")["body"]["status"] == "ready"
+    # the book comes from the file (review on a phone): GET /mb does not run the engine
+    from unittest import mock
+    with mock.patch.object(service, "run", side_effect=AssertionError("engine ran")):
+        book = call("GET", f"/api/jobs/{new}/mb")
+    assert len(json.loads(Path(book["file"]).read_text())["rows"]) == 57
     assert call("POST", f"/api/jobs/{new}/build", cfg)["body"]["counts"]["mb_rows"] == 57
     bad = tmp_path / "bad.json"
     bad.write_text('{"format": "something-else"}')

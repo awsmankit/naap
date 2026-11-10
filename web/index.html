@@ -2,32 +2,50 @@
 <html lang="en-IN">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, interactive-widget=resizes-content">
 <title>Naap · Drawing to Measurement Book</title>
 <link rel="preload" href="fonts/osifont.woff2" as="font" type="font/woff2" crossorigin>
 <link rel="preload" href="fonts/BarlowSemiCondensed-Regular.woff2" as="font" type="font/woff2" crossorigin>
 <link rel="stylesheet" href="css/app.css">
-<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='5' fill='%230d2233'/%3E%3Cpath d='M7 24V8h6M7 16h5M19 8v16h6' stroke='%23e9c46a' stroke-width='2.4' fill='none'/%3E%3C/svg%3E">
+<meta name="description" content="Turn an AutoCAD DWG/DXF or vector PDF drawing into a CPWD-style Measurement Book, every quantity traced to the drawing. Free, open source, runs in your browser.">
+<meta name="theme-color" content="#0d2233">
+<link rel="icon" href="icons/favicon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+<link rel="manifest" href="manifest.webmanifest">
+<meta name="apple-mobile-web-app-title" content="Naap">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="Naap">
+<meta property="og:title" content="Naap · Drawing to Measurement Book">
+<meta property="og:description" content="DWG, DXF or PDF drawing in; a CPWD-style Measurement Book out, every quantity traced to the drawing. Runs in your browser.">
+<meta property="og:url" content="https://awsmankit.github.io/naap/">
+<meta property="og:image" content="https://awsmankit.github.io/naap/og.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta property="og:image:alt" content="Naap with a sample house plan: the ground-floor walls of one measurement-book line are highlighted on the drawing next to the book">
+<meta property="og:locale" content="en_IN">
+<meta name="twitter:card" content="summary_large_image">
 </head>
 <body>
 <a class="skip" href="#main">Skip to content</a>
 
 <header class="bar" role="banner">
-  <a class="mark" href="#" id="home" aria-label="Naap, drawing to measurement book, start over">
+  <a class="mark" href="#" id="home">
     <svg viewBox="0 0 32 32" aria-hidden="true"><path d="M5 27V5l22 22z" /><path d="M10 22v-6l6 6z" /></svg>
-    <span>Naap <i aria-hidden="true">·</i> Drawing <i aria-hidden="true">→</i> Measurement Book</span>
+    <span>Naap <i aria-hidden="true">·</i> Drawing <i aria-hidden="true">→</i> Measurement Book</span><b class="sr-only">Naap home, start over</b>
   </a>
   <ol class="steps" id="steps" aria-label="Progress">
-    <li data-step="upload"><button type="button"><b>1</b>Upload</button></li>
-    <li data-step="review"><button type="button"><b>2</b>Review</button></li>
-    <li data-step="mb"><button type="button"><b>3</b>Measurement book</button></li>
+    <li data-step="upload"><button type="button"><b>1</b><span class="lbl">Upload</span></button></li>
+    <li data-step="review"><button type="button"><b>2</b><span class="lbl">Review</span></button></li>
+    <li data-step="mb"><button type="button"><b>3</b><span class="lbl">Measurement book</span><span class="lbl-s" aria-hidden="true">Book</span></button></li>
   </ol>
   <div class="bar-right">
     <span class="job" id="jobName"></span>
     <span class="mode" id="modeBadge" hidden title="Quantities come from web/mock/mb.json, not the engine">Mock data</span>
     <button class="btn ghost" id="btnSaveProject" type="button" hidden title="Save this job (drawing geometry and your answers) as a .naap.json file you can open later or share">Save project</button>
     <a class="btn ghost" id="btnXlsx" hidden>Export Excel</a>
+    <button class="btn ghost more" id="btnMore" type="button" aria-haspopup="true" aria-expanded="false" aria-controls="moreMenu" aria-label="More: job details, export and save" hidden><svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="4" cy="10" r="1.7"/><circle cx="10" cy="10" r="1.7"/><circle cx="16" cy="10" r="1.7"/></svg></button>
   </div>
+  <div class="more-menu" id="moreMenu" hidden></div>
 </header>
 
 <main id="main">
@@ -70,10 +88,12 @@
   </section>
 
   <!-- ============================== WORKSPACE (review + MB) ============================== -->
-  <section class="view view-work" id="view-work" hidden>
+  <section class="view view-work" id="view-work" aria-labelledby="workTitle" hidden>
+    <h1 class="sr-only" id="workTitle">Drawing and measurement book</h1>
     <div class="work" id="work">
       <div class="stage" id="stage">
-        <canvas id="canvas" aria-label="Drawing viewer. Drag to pan, scroll to zoom, click an entity to list the MB rows that use it." tabindex="0"></canvas>
+        <canvas id="canvas" aria-label="Drawing viewer. Drag to pan, scroll or pinch to zoom, double-tap to zoom in, click or tap an entity to list the MB rows that use it. Keys: arrows pan, plus and minus zoom, F fits." aria-describedby="canvasHelp" tabindex="0"></canvas>
+        <p class="sr-only" id="canvasHelp">The drawing is also described by the measurement book: select a line there to highlight it here.</p>
         <div class="tools" role="toolbar" aria-label="Drawing">
           <button class="tool" id="tFit" title="Fit to view (F)" aria-label="Fit to view"><svg viewBox="0 0 20 20"><path d="M3 7V3h4M13 3h4v4M17 13v4h-4M7 17H3v-4"/></svg></button>
           <button class="tool" id="tLayers" title="Layers" aria-label="Layers" aria-expanded="false" aria-controls="layerPop"><svg viewBox="0 0 20 20"><path d="m10 3 7 4-7 4-7-4zM3 11l7 4 7-4"/></svg></button>
@@ -83,6 +103,8 @@
           <button class="tool" id="tRaster" title="Sheet as printed (raster backdrop)" aria-label="Sheet as printed" aria-pressed="false" hidden><svg viewBox="0 0 20 20"><rect x="3" y="4" width="14" height="12" rx="1"/><path d="m5 14 4-4 3 3 2-2 2 2"/><circle cx="13" cy="7.5" r="1.2"/></svg></button>
           <button class="tool" id="tCal" title="Calibrate this sheet: two points and a known length" aria-label="Calibrate this sheet" aria-pressed="false" hidden><svg viewBox="0 0 20 20"><path d="m3 13 10-10 4 4L7 17z"/><path d="m6 10 1.5 1.5M8.5 7.5 10 9M11 5l1.5 1.5"/></svg></button>
         </div>
+        <button class="fs-close" id="fsClose" type="button" aria-label="Close the full-screen drawing"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="m5 5 10 10M15 5 5 15"/></svg></button>
+        <div class="fs-bar" id="fsBar" role="region" aria-label="Selected line"></div>
         <div class="sheet-strip" id="sheetStrip" hidden></div>
         <div class="calbar" id="calbar" role="status" aria-live="polite" hidden></div>
         <div class="calpop" id="calpop" role="dialog" aria-label="Calibrate sheet" hidden></div>
@@ -99,7 +121,12 @@
         <div class="stage-msg" id="stageMsg" hidden></div>
       </div>
 
-      <div class="splitter" id="splitter" role="separator" aria-orientation="vertical" aria-label="Resize drawing and table" tabindex="0" aria-valuemin="25" aria-valuemax="75"></div>
+      <div class="splitter" id="splitter" role="separator" aria-orientation="vertical" aria-label="Resize drawing and table" tabindex="0" aria-valuemin="25" aria-valuemax="75" aria-valuenow="52"></div>
+      <div class="minibar" id="miniBar">
+        <button type="button" id="btnMini" aria-expanded="true" aria-controls="stage"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="m5 8 5 5 5-5"/></svg><span>Drawing</span></button>
+        <span class="mb-hint" id="miniHint">Tap a card to see it on the drawing</span>
+        <button type="button" id="btnFull"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M3 8V3h5M12 3h5v5M17 12v5h-5M8 17H3v-5"/></svg><span>Full screen</span></button>
+      </div>
 
       <!-- review panel -->
       <aside class="panel review-panel" id="reviewPanel" hidden aria-label="Review settings">
@@ -137,6 +164,13 @@
   </section>
 </main>
 
+<div class="modal" id="guard" role="dialog" aria-modal="true" aria-labelledby="guardTitle" aria-describedby="guardBody" hidden>
+  <div class="modal-card">
+    <h2 id="guardTitle">This drawing may be too big for this device</h2>
+    <div id="guardBody"></div>
+    <div class="modal-actions" id="guardActions"></div>
+  </div>
+</div>
 <div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
 <script type="module" src="js/main.js"></script>
 </body>
