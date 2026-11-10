@@ -25,6 +25,7 @@
   <div class="bar-right">
     <span class="job" id="jobName"></span>
     <span class="mode" id="modeBadge" hidden title="Quantities come from web/mock/mb.json, not the engine">Mock data</span>
+    <button class="btn ghost" id="btnSaveProject" type="button" hidden title="Save this job (drawing geometry and your answers) as a .naap.json file you can open later or share">Save project</button>
     <a class="btn ghost" id="btnXlsx" hidden>Export Excel</a>
   </div>
 </header>
@@ -41,7 +42,7 @@
           <path d="M14 8h26l10 10v38H14z" /><path d="M40 8v10h10" /><path d="M32 46V26m-8 8 8-8 8 8" />
         </svg>
         <h1 id="upTitle">Drop a drawing to start a measurement book</h1>
-        <p id="upHint">AutoCAD <b>.dwg</b> or <b>.dxf</b> up to <span id="maxMb">300</span> MB, or a vector <b>.pdf</b> drawing set. Nothing leaves this computer.</p>
+        <p id="upHint">AutoCAD <b>.dwg</b> or <b>.dxf</b> up to <span id="maxMb">300</span> MB, or a vector <b>.pdf</b> drawing set. <span id="upPrivacy">Nothing leaves this computer.</span></p>
         <label class="btn primary" for="fileInput">Choose a file</label>
         <input type="file" id="fileInput" accept=".dwg,.dxf,.pdf" hidden>
       </div>
@@ -62,6 +63,8 @@
       <p class="err" id="upErr" role="alert" hidden></p>
       <h2 class="side-h">Recent drawings</h2>
       <ul class="recent" id="recent"><li class="muted">None yet.</li></ul>
+      <p class="muted small" id="projectOpen" hidden>Carry on from a saved project: <a href="#" id="btnOpenProject">Open a .naap.json file</a>. Jobs also stay in this browser until you clear its site data.
+        <input type="file" id="projectInput" accept=".json,application/json" hidden></p>
       <p class="muted small" id="mockHint">No drawing to hand? <a href="#" id="btnSample">Process the sample house</a> (<code>samples/sample-house.dxf</code>, a made-up 2BHK) or <a href="?mock=1">preview its book offline</a>.</p>
     </div>
   </section>

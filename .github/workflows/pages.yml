@@ -1,0 +1,67 @@
+name: Pages
+
+# Builds the in-browser Naap (scripts/build_site.py: the UI in "local" mode, the Python engine on
+# Pyodide, LibreDWG as WebAssembly, all self-hosted) and deploys it to GitHub Pages.
+# Needs Settings -> Pages -> Source: "GitHub Actions".
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    env:
+      PLAYWRIGHT_VERSION: "1.65.0"
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: astral-sh/setup-uv@v10.3.3
+        with:
+          enable-cache: true
+
+      - name: Install Python and dependencies
+        run: |
+          uv python install 3.12
+          uv sync --frozen
+
+      # pinned downloads (Pyodide, wheels, LibreDWG wasm, licence texts), checked by SHA-256
+      - name: Cache runtime downloads
+        uses: actions/cache@v6
+        with:
+          path: .cache/site
+          key: site-assets-${{ hashFiles('scripts/build_site.py') }}
+
+      - name: Build the site
+        run: uv run python scripts/build_site.py
+
+      - name: Smoke test in headless Chromium (sample house, in-browser mode)
+        run: |
+          uv run --with "playwright==${PLAYWRIGHT_VERSION}" playwright install --with-deps chromium
+          uv run --with "playwright==${PLAYWRIGHT_VERSION}" python scripts/browser_smoke.py --timeout 300
+
+      - uses: actions/configure-pages@v6
+
+      - uses: actions/upload-pages-artifact@v5
+        with:
+          path: site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-24.04
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v5

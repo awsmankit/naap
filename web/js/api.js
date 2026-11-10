@@ -1,19 +1,122 @@
 // API client + data contract normalisation.
 //
-// The UI codes against GET /api/jobs/{id}/mb (see web/README.md). Until the
-// backend serves it, `?mock=1` uses web/mock/mb.json, and real mode falls back
-// to the POST /build response (no row-level MB).
+// Two transports, one API. "server" mode calls the FastAPI app with fetch (as always); "local"
+// mode runs the same Python engine in a Web Worker on Pyodide (web/worker/naap-worker.js), so the
+// drawing never leaves the browser. The mode comes from config.js (set at build time; the GitHub
+// Pages site is "local") and `?mode=local|server` overrides it. Everything outside this file
+// calls the same functions in either mode.
+//
+// The UI codes against GET /api/jobs/{id}/mb (see web/README.md). `?mock=1` uses
+// web/mock/mb.json, and real mode falls back to the POST /build response (no row-level MB).
 
+import { CONFIG } from "../config.js";
 import { guessTrade } from "./theme.js";
 
 const params = new URLSearchParams(location.search);
 export const MOCK = params.get("mock") === "1";
+const asked = params.get("mode");
+export const MODE = asked === "local" || asked === "server" ? asked : CONFIG.mode === "local" ? "local" : "server";
+export const LOCAL = MODE === "local";
+/** Save / open a whole job as a .naap.json file (the in-browser version keeps jobs in this browser). */
+export const CAN_PROJECTS = LOCAL;
 
 export class ApiError extends Error {
   constructor(msg, status) { super(msg); this.status = status; }
 }
 
+/** What to tell the user when the API cannot be reached at all. */
+export const UNREACHABLE = LOCAL
+  ? "The in-browser engine could not start in this browser. Use a current Chrome, Edge, Firefox or Safari, or run the server version (see the README)."
+  : "The app server is not reachable on port 8777, so uploads are off. Start it with: uv run python -m app";
+
+// ------------------------------------------------------------------ local mode: the worker
+class LocalEngine {
+  constructor() {
+    this.w = null; this.seq = 0; this.pending = new Map();
+    this.state = new Map();      // job id -> latest state pushed by the worker
+    this.busy = new Set();       // jobs being converted/read (status answered from this.state)
+    this.onProgress = null;      // (p) => void, during an upload
+  }
+
+  start() {
+    if (this.w) return this.w;
+    const w = new Worker(new URL("../worker/naap-worker.js", import.meta.url), { type: "module" });
+    w.onmessage = (e) => this.message(e.data);
+    w.onerror = (e) => { e.preventDefault?.(); this.crash(e.message || "the worker failed to load"); };
+    this.w = w;
+    return w;
+  }
+
+  crash(why) {
+    this.w?.terminate();
+    this.w = null;
+    for (const [, p] of this.pending) p.reject(new ApiError(`The in-browser engine stopped (${why}). Your jobs are kept in this browser; try again, or use the server version for very large drawings.`, 500));
+    this.pending.clear();
+    for (const id of this.busy) {
+      const st = this.state.get(id);
+      if (st) this.state.set(id, { ...st, status: "error", error: `The in-browser engine stopped while reading this drawing (${why}). It may be too large for the browser: try the server version.` });
+    }
+    this.busy.clear();
+  }
+
+  message(m) {
+    if (m.type === "reply") {
+      const p = this.pending.get(m.id);
+      if (!p) return;
+      this.pending.delete(m.id);
+      p.resolve(m);
+    } else if (m.type === "state") {
+      this.state.set(m.state.id, m.state);
+      if (m.state.status === "ready" || m.state.status === "error") this.busy.delete(m.state.id);
+    } else if (m.type === "progress") {
+      this.onProgress?.({ msg: m.msg, pct: m.total ? Math.round((m.loaded / m.total) * 100) : null });
+    } else if (m.type === "fatal") {
+      this.crash(m.error);
+    }
+  }
+
+  send(msg, transfer = []) {
+    const w = this.start();
+    const id = ++this.seq;
+    return new Promise((resolve, reject) => {
+      this.pending.set(id, { resolve, reject });
+      w.postMessage({ ...msg, id }, transfer);
+    });
+  }
+
+  /** A call answered like fetch + api() would: parsed JSON, or a Blob for files. */
+  async request(method, path, body) {
+    const id = path.match(/^\/api\/jobs\/([0-9a-f]{32})$/)?.[1];
+    if (method === "GET" && id && this.busy.has(id)) {
+      const st = this.state.get(id);
+      return { ...st, elapsed_s: Math.round((Date.now() / 1000 - st.created) * 10) / 10 };
+    }
+    return unpack(await this.send({ type: "call", method, url: path, body }));
+  }
+}
+
+function unpack(r) {
+  if (r.status >= 400) throw new ApiError(r.body?.detail || `Error ${r.status}`, r.status);
+  if (!r.file) return r.body;
+  if (r.file.type === "application/json") return JSON.parse(new TextDecoder().decode(r.file.buf));
+  const blob = new Blob([r.file.buf], { type: r.file.type });
+  blob.filename = r.file.filename;
+  return blob;
+}
+
+const engine = LOCAL ? new LocalEngine() : null;
+
+/** Start loading the in-browser engine early (e.g. when a file is dragged in). */
+export function warmup() {
+  engine?.start().postMessage({ type: "warmup" });
+}
+
+// ------------------------------------------------------------------ the API
 export async function api(path, opts = {}) {
+  if (engine && (path.startsWith("/api/") || path === "/openapi.json")) {
+    if (path === "/openapi.json") return { paths: { "/api/jobs/{job_id}/mb": {} } };
+    return engine.request((opts.method || "GET").toUpperCase(), path, opts.body ? JSON.parse(opts.body) : null);
+  }
   let res;
   try {
     res = await fetch(path, opts);
@@ -33,6 +136,102 @@ export const putConfig = (id, cfg) => api(`/api/jobs/${id}/config`, { ...json(cf
 export const runCheck = (id, cfg) => api(`/api/jobs/${id}/check`, json(cfg));
 export const runBuild = (id, cfg) => api(`/api/jobs/${id}/build`, json(cfg));
 export const putCalibration = (id, body) => api(`/api/jobs/${id}/calibration`, { ...json(body), method: "PUT" });
+
+/**
+ * Send a drawing to the engine. onProgress({msg, pct}) reports the upload (server) or loading
+ * the in-browser engine (local). Resolves {id}; then poll GET /api/jobs/{id} for the stages.
+ */
+export function uploadJob(file, onProgress = () => {}) {
+  if (engine) {
+    return (async () => {
+      engine.onProgress = onProgress;
+      try {
+        const buf = await file.arrayBuffer();
+        const r = unpack(await engine.send({ type: "upload", name: file.name, size: file.size, buf }, [buf]));
+        engine.state.set(r.id, r.state);
+        if (r.state.status !== "ready" && r.state.status !== "error") engine.busy.add(r.id);
+        return { id: r.id };
+      } finally { engine.onProgress = null; }
+    })();
+  }
+  return new Promise((resolve, reject) => {
+    const fd = new FormData();
+    fd.append("file", file);
+    const xhr = new XMLHttpRequest();
+    xhr.open("POST", "/api/jobs");
+    xhr.upload.onprogress = (e) => { if (e.lengthComputable) onProgress({ msg: `${Math.round((e.loaded / e.total) * 100)}% of ${(e.total / 1e6).toFixed(1)} MB`, pct: Math.round((e.loaded / e.total) * 100) }); };
+    xhr.onerror = () => reject(new ApiError("The upload failed: the app server did not answer. Check it is running on port 8777.", 0));
+    xhr.onload = () => {
+      let body = {};
+      try { body = JSON.parse(xhr.responseText); } catch { /* ignore */ }
+      if (xhr.status >= 400) reject(new ApiError(body.detail || `Upload failed (${xhr.status}).`, xhr.status));
+      else resolve(body);
+    };
+    xhr.send(fd);
+  });
+}
+
+/** The public sample drawing (samples/sample-house.dxf) as a File. */
+export async function sampleFile(name = "sample-house.dxf") {
+  let r;
+  try { r = await fetch(engine ? `samples/${name}` : `/api/sample/${name}`); } catch (e) { throw new ApiError(e.message, 0); }
+  if (!r.ok) throw new ApiError(`HTTP ${r.status}`, r.status);
+  return new File([await r.blob()], name, { type: "application/dxf" });
+}
+
+// sheet images: a URL (server) or a promise of an object URL (local; kept until the job changes)
+const rasterCache = new Map();
+let rasterJob = null;
+export function sheetImage(id, n, dpi, clip) {
+  const path = `/api/jobs/${id}/sheet/${n}.png?dpi=${dpi}${clip ? `&clip=${clip}` : ""}`;
+  if (!engine) return path;
+  if (rasterJob !== id) { for (const p of rasterCache.values()) p.then(URL.revokeObjectURL, () => {}); rasterCache.clear(); rasterJob = id; }
+  if (!rasterCache.has(path)) {
+    const p = api(path).then((blob) => URL.createObjectURL(blob));
+    p.catch(() => rasterCache.delete(path));
+    rasterCache.set(path, p);
+    if (rasterCache.size > 300) { const [k, old] = rasterCache.entries().next().value; rasterCache.delete(k); old.then(URL.revokeObjectURL, () => {}); }
+  }
+  return rasterCache.get(path);
+}
+
+function saveBlob(blob, filename) {
+  const url = URL.createObjectURL(blob);
+  const a = Object.assign(document.createElement("a"), { href: url, download: filename || "" });
+  document.body.append(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 60_000);
+}
+
+/** href for the Export button (the click handler calls downloadXlsx). */
+export const xlsxHref = (id) => (engine ? "#export" : `/api/jobs/${id}/mb.xlsx`);
+
+/** Download the job's workbook (build it first if needed: see main.js). */
+export async function downloadXlsx(id) {
+  if (!engine) {
+    const link = Object.assign(document.createElement("a"), { href: `/api/jobs/${id}/mb.xlsx?t=${Date.now()}`, download: "" });
+    document.body.append(link); link.click(); link.remove();
+    return;
+  }
+  const blob = await api(`/api/jobs/${id}/mb.xlsx`);
+  saveBlob(blob, blob.filename || "MB.xlsx");
+}
+
+/** Save the job (drawing geometry + review answers; a PDF job also carries its PDF) as .naap.json. */
+export async function saveProject(id) {
+  if (!CAN_PROJECTS) throw new ApiError("Projects are saved by the in-browser version only.", 400);
+  const blob = await api(`/api/jobs/${id}/project`);
+  saveBlob(blob, blob.filename || "drawing.naap.json");
+}
+
+/** Open a saved .naap.json as a new job. Resolves {id}. */
+export async function openProject(file, onProgress = () => {}) {
+  if (!CAN_PROJECTS) throw new ApiError("Projects are opened by the in-browser version only.", 400);
+  engine.onProgress = onProgress;
+  try {
+    const buf = await file.arrayBuffer();
+    return unpack(await engine.send({ type: "import", buf }, [buf]));
+  } finally { engine.onProgress = null; }
+}
 
 /**
  * Load the measurement book for a job.

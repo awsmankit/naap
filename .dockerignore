@@ -11,3 +11,5 @@ tests
 *.png
 *.jpg
 .DS_Store
+site
+.cache

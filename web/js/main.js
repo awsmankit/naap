@@ -3,7 +3,8 @@
 
 import { S, A, rowById } from "./state.js";
 import { $, $$, el, fq, fmt, unit, debounce, toast, unionBox, validBox } from "./util.js";
-import { api, MOCK, loadMB, putConfig, runCheck, runBuild, putCalibration, normalise } from "./api.js";
+import { api, MOCK, LOCAL, CAN_PROJECTS, UNREACHABLE, loadMB, putConfig, runCheck, runBuild, putCalibration, normalise,
+  uploadJob, sampleFile, sheetImage, xlsxHref, downloadXlsx, saveProject, openProject, warmup } from "./api.js";
 import { Viewer } from "./viewer.js";
 import { tradeOf, SEV } from "./theme.js";
 import { renderLedger, applySelection, renderFoot, renderTabs } from "./ledger.js";
@@ -36,9 +37,10 @@ function setStep(step) {
     S.viewer.resize();
   }
   $("#btnXlsx").hidden = step !== "mb";
+  $("#btnSaveProject").hidden = !CAN_PROJECTS || step === "upload" || !S.jobId;
   $("#sheetStrip").hidden = step === "upload" || !S.isPdf;
   if (step !== "mb") cancelCalibrate();
-  const q = MOCK ? "?mock=1" : "";
+  const q = location.search;
   const hash = S.jobId ? `#job=${S.jobId}&step=${step}` : step === "upload" ? "" : `#step=${step}`;
   if (location.hash !== hash) history.replaceState(null, "", `${location.pathname}${q}${hash}`);
   if (step === "review") renderReview();
@@ -54,7 +56,7 @@ $$("#steps li").forEach((li) => li.querySelector("button").addEventListener("cli
 $("#home").addEventListener("click", (e) => { e.preventDefault(); resetUpload(); setStep("upload"); });
 
 // ================================================================ upload
-const STAGES = [["upload", "Upload"], ["converting", "Convert DWG to DXF"], ["parsing", "Read geometry"], ["clustering", "Find views on the sheet"], ["ready", "Ready to review"]];
+const STAGES = [["upload", LOCAL ? "Load the engine in this browser" : "Upload"], ["converting", "Convert DWG to DXF"], ["parsing", "Read geometry"], ["clustering", "Find views on the sheet"], ["ready", "Ready to review"]];
 const ACCEPT = ["dwg", "dxf", "pdf"];
 
 function resetUpload() {
@@ -82,9 +84,18 @@ function renderStages(status, kind, extra = {}) {
     let cls = i < cur ? "done" : i === cur ? "run" : "";
     if (status === "ready") cls = "done";
     if (status === "error" && i === cur) cls = "fail";
+    const running = i === cur && status !== "ready" && status !== "error";
     return el("li", { class: cls, "aria-current": i === cur ? "step" : null }, label,
-      i === cur && extra.msg ? el("small", {}, extra.msg) : null);
+      i === cur && extra.msg ? el("small", {}, extra.msg) : null,
+      running ? progressBar(extra.pct) : null);
   }));
+}
+
+/** A determinate bar (pct) or, without a pct, an indeterminate one. */
+function progressBar(pct) {
+  const known = pct != null && Number.isFinite(pct);
+  return el("span", { class: `pbar${known ? "" : " busy"}`, role: "progressbar", "aria-valuemin": 0, "aria-valuemax": 100, "aria-valuenow": known ? String(pct) : null },
+    el("i", { style: known ? { width: `${Math.max(2, Math.min(100, pct))}%` } : {} }));
 }
 
 function upErr(msg) {
@@ -94,6 +105,7 @@ function upErr(msg) {
 }
 
 function uploadFile(file) {
+  if (CAN_PROJECTS && /\.naap\.json$|\.json$/i.test(file.name)) return openProjectFile(file);
   const ext = file.name.toLowerCase().split(".").pop();
   if (!ACCEPT.includes(ext)) return upErr(`“${file.name}” is not a .dwg, .dxf or .pdf file. Export the drawing from CAD as DWG, DXF or a vector PDF and try again.`);
   const max = ext === "pdf" ? S.meta?.max_pdf_mb || 100 : S.meta?.max_upload_mb || 300;
@@ -103,20 +115,11 @@ function uploadFile(file) {
   setTB({ name: file.name, size: `${(file.size / 1e6).toFixed(1)} MB`, units: "—", ents: "—", layers: "—", views: "—", time: "0 s" });
   const t0 = Date.now();
   const timer = setInterval(() => setTB({ time: `${Math.round((Date.now() - t0) / 1000)} s` }), 500);
-  renderStages("uploading", ext, { msg: "0%" });
-  const fd = new FormData();
-  fd.append("file", file);
-  const xhr = new XMLHttpRequest();
-  xhr.open("POST", "/api/jobs");
-  xhr.upload.onprogress = (e) => { if (e.lengthComputable) renderStages("uploading", ext, { msg: `${Math.round((e.loaded / e.total) * 100)}% of ${(e.total / 1e6).toFixed(1)} MB` }); };
-  xhr.onerror = () => { clearInterval(timer); upErr("The upload failed: the app server did not answer. Check it is running on port 8777."); };
-  xhr.onload = async () => {
-    let body = {};
-    try { body = JSON.parse(xhr.responseText); } catch { /* ignore */ }
-    if (xhr.status >= 400) { clearInterval(timer); renderStages("error", ext); return upErr(body.detail || `Upload failed (${xhr.status}).`); }
-    try { await pollJob(body.id, t0); } catch (e) { upErr(e.message); } finally { clearInterval(timer); }
-  };
-  xhr.send(fd);
+  renderStages("uploading", ext, { msg: LOCAL ? "Starting…" : "0%", pct: 0 });
+  uploadJob(file, (p) => renderStages("uploading", ext, p))
+    .then((body) => pollJob(body.id, t0).catch((e) => upErr(e.message)),
+      (e) => { renderStages("error", ext); upErr(e.message); })
+    .finally(() => clearInterval(timer));
 }
 
 async function pollJob(id, t0 = Date.now()) {
@@ -163,6 +166,8 @@ async function resume(id, step) {
 
 const dz = $("#dropzone");
 dz.addEventListener("dragover", (e) => { e.preventDefault(); dz.classList.add("over"); });
+dz.addEventListener("dragenter", warmup, { once: true });
+dz.addEventListener("pointerenter", warmup, { once: true });
 dz.addEventListener("dragleave", () => dz.classList.remove("over"));
 dz.addEventListener("drop", (e) => { e.preventDefault(); dz.classList.remove("over"); if (e.dataTransfer.files[0]) uploadFile(e.dataTransfer.files[0]); });
 dz.addEventListener("click", (e) => { if (!dz.classList.contains("busy") && !e.target.closest("label, input")) $("#fileInput").click(); });
@@ -171,10 +176,8 @@ $("#fileInput").addEventListener("change", (e) => { if (e.target.files[0]) uploa
 $("#btnSample").addEventListener("click", async (e) => {
   e.preventDefault();
   try {
-    const r = await fetch("/api/sample/sample-house.dxf");
-    if (!r.ok) throw new Error(`HTTP ${r.status}`);
-    uploadFile(new File([await r.blob()], "sample-house.dxf", { type: "application/dxf" }));
-  } catch (err) { upErr(`Could not load the sample drawing (${err.message}). Is the app server running?`); }
+    uploadFile(await sampleFile("sample-house.dxf"));
+  } catch (err) { upErr(`Could not load the sample drawing (${err.message}).${LOCAL ? "" : " Is the app server running?"}`); }
 });
 
 // ================================================================ open a job / workspace
@@ -256,7 +259,7 @@ async function useDrawing(job, geo, cfg) {
 }
 
 // ================================================================ PDF sheets
-const rasterUrl = (id) => (n, dpi, clip) => `/api/jobs/${id}/sheet/${n}.png?dpi=${dpi}${clip ? `&clip=${clip}` : ""}`;
+const rasterUrl = (id) => (n, dpi, clip) => sheetImage(id, n, dpi, clip);
 const sheetBox = (n) => S.geo?.sheets?.find((s) => s.sheet === Number(n))?.bbox || null;
 
 /** Show one sheet (n) or all sheets side by side (null). */
@@ -304,7 +307,8 @@ function renderSheetStrip() {
   }, img, el("span", { class: "no" }, label), el("span", { class: "ti" }, title || ""), extra);
   const items = S.geo.sheets.map((s) => {
     const label = sheetName(s.sheet), tb = s.title_block || {};
-    const img = S.jobId && !s.scanned ? el("img", { src: rasterUrl(S.jobId)(s.sheet, 9), alt: "", loading: "lazy", decoding: "async" }) : el("span", { class: "noimg" }, s.scanned ? "scanned" : "");
+    const img = S.jobId && !s.scanned ? el("img", { alt: "", loading: "lazy", decoding: "async" }) : el("span", { class: "noimg" }, s.scanned ? "scanned" : "");
+    if (img.tagName === "IMG") Promise.resolve(rasterUrl(S.jobId)(s.sheet, 9)).then((u) => { img.src = u; }, () => {});
     const fl = openBySheet.get(s.sheet), nr = rowsBySheet.get(s.sheet);
     const extra = el("span", { class: "meta" }, nr ? `${fmt(nr, 0)} lines` : "", fl ? el("i", { title: `${fl} open flags` }, `${fl} ⚑`) : null,
       tb.floor_scope?.multiplier > 1 ? el("i", { class: "x" }, `×${tb.floor_scope.multiplier}`) : null);
@@ -743,7 +747,7 @@ function updateXlsx() {
   const a = $("#btnXlsx");
   if (S.offline) { a.setAttribute("aria-disabled", "true"); a.title = "Upload a drawing to export its workbook"; a.removeAttribute("href"); return; }
   a.removeAttribute("aria-disabled");
-  a.href = `/api/jobs/${S.jobId}/mb.xlsx`;
+  a.href = xlsxHref(S.jobId);
   a.title = MOCK ? "Downloads the engine's workbook for this job (not the sample quantities)" : "Download the MB workbook (.xlsx)";
 }
 $("#btnXlsx").addEventListener("click", async (e) => {
@@ -751,10 +755,36 @@ $("#btnXlsx").addEventListener("click", async (e) => {
   if (S.offline) { toast("The sample book has no workbook. Upload a drawing to export one."); return; }
   try {
     if (!S.builtAt || S.dirtyAt > S.builtAt) { toast("Building the workbook…"); await runBuild(S.jobId, S.cfg); S.builtAt = Date.now(); }
-    const link = el("a", { href: `/api/jobs/${S.jobId}/mb.xlsx?t=${Date.now()}`, download: "" });
-    document.body.append(link); link.click(); link.remove();
+    await downloadXlsx(S.jobId);
   } catch (err) { toast(`Export failed: ${err.message}`, true); }
 });
+
+// ================================================================ projects (.naap.json, in-browser version)
+$("#btnSaveProject").addEventListener("click", async () => {
+  if (!S.jobId) return;
+  const b = $("#btnSaveProject");
+  b.disabled = true;
+  try {
+    if (!S.offline) await saveConfig();
+    await saveProject(S.jobId);
+    toast("Project saved. Open it here or in another browser to carry on (Open a saved project, on the upload page).");
+  } catch (e) { toast(`Could not save the project: ${e.message}`, true); } finally { b.disabled = false; }
+});
+
+async function openProjectFile(file) {
+  $("#upErr").hidden = true;
+  $("#dropzone").classList.add("busy");
+  setTB({ name: file.name, size: `${(file.size / 1e6).toFixed(1)} MB`, units: "—", ents: "—", layers: "—", views: "—", time: "—" });
+  renderStages("uploading", "dxf", { msg: "Opening the project…" });
+  try {
+    const { id } = await openProject(file, (p) => renderStages("uploading", "dxf", p));
+    $("#stages").hidden = true;
+    $("#dropzone").classList.remove("busy");
+    await openJob(id, "review");
+  } catch (e) { renderStages("error", "dxf"); upErr(e.message); }
+}
+$("#projectInput").addEventListener("change", (e) => { if (e.target.files[0]) openProjectFile(e.target.files[0]); e.target.value = ""; });
+$("#btnOpenProject").addEventListener("click", (e) => { e.preventDefault(); $("#projectInput").click(); });
 
 // ================================================================ toolbar, layers, splitter
 $("#tFit").addEventListener("click", () => S.viewer?.fit(homeBox() || S.viewer.home));
@@ -920,6 +950,8 @@ async function bootOffline() {
   try {
     S.meta = await api("/api/meta");
     $("#maxMb").textContent = S.meta.max_upload_mb;
+    if (LOCAL) $("#upPrivacy").textContent = "Naap runs in this browser: the drawing is read here and never uploaded.";
+    $("#projectOpen").hidden = !CAN_PROJECTS;
   } catch { /* no server: upload disabled, mock still works */ }
   if (MOCK) $("#mockHint").hidden = true;
   resetUpload();
@@ -929,5 +961,5 @@ async function bootOffline() {
     if (MOCK) { await bootOffline(); return; }
   } catch (e) { upErr(e.message); setStep("upload"); return; }
   setStep("upload");
-  if (!S.meta) upErr("The app server is not reachable on port 8777, so uploads are off. Start it with: uv run python -m app");
+  if (!S.meta) upErr(UNREACHABLE);
 })();

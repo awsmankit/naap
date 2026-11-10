@@ -10,13 +10,24 @@ from pathlib import Path
 import pytest
 
 WEB = Path(__file__).resolve().parents[1] / "web"
-JS = sorted((WEB / "js").glob("*.js"))
+JS = sorted((WEB / "js").glob("*.js")) + sorted((WEB / "worker").glob("*.js")) + [WEB / "config.js"]
 
 
 def test_imports_resolve():
     for f in JS:
         for spec in re.findall(r'^import [^;]*? from "(\.[^"]+)";', f.read_text(), re.M):
+            if "/vendor/" in spec:  # runtime files the site build adds (scripts/build_site.py)
+                continue
             assert (f.parent / spec).resolve().exists(), f"{f.name}: {spec}"
+
+
+def test_only_api_js_knows_the_transport():
+    """The UI talks to the engine through api.js only (server fetch or the in-browser worker)."""
+    for f in JS:
+        if f.parent.name != "js" or f.name == "api.js":
+            continue
+        s = f.read_text()
+        assert "new Worker" not in s and "XMLHttpRequest" not in s and "fetch(" not in s, f.name
 
 
 def test_ids_exist_in_index():
@@ -45,7 +56,8 @@ def test_branding_and_sample_links():
     html = (WEB / "index.html").read_text()
     assert "<title>Naap" in html and "Naap" in html.split("</header>")[0]
     assert 'href="?mock=1"' in html and 'id="btnSample"' in html
-    assert "/api/sample/sample-house.dxf" in (WEB / "js" / "main.js").read_text()
+    api = (WEB / "js" / "api.js").read_text()
+    assert "/api/sample/${name}" in api and "samples/${name}" in api and 'sampleFile("sample-house.dxf")' in (WEB / "js" / "main.js").read_text()
 
 
 def test_ui_has_no_absolute_paths_or_cdns():

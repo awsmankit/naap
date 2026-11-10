@@ -3,9 +3,10 @@
 **Drawing → Measurement Book.** Naap turns a DWG, DXF or PDF drawing into a CPWD-style Measurement Book
 (MB). Every quantity in the book can be traced back to the drawing.
 
-*Naap* is Hindi for "measurement". It is a local web app. You upload a drawing, review what the engine
-read and fix what the drawing leaves open, then export an Excel workbook. Uploaded drawings are not
-sent to any external service.
+*Naap* is Hindi for "measurement". It is a web app that runs on your computer: either entirely in
+your browser (nothing to install) or as a local server. You open a drawing, review what the engine
+read and fix what the drawing leaves open, then export an Excel workbook. Drawings are not sent to
+any external service.
 
 > **Naap gives a quantity book taken from the drawing. It is not a measurement book of work executed
 > on site.** Quantities follow the drawing and the answers you enter. Check them against the site and
@@ -51,7 +52,37 @@ sent to any external service.
 
 ## Quick start
 
-### Local
+### In the browser (no install)
+
+Open **https://awsmankit.github.io/naap/** and drop a DWG, DXF or PDF on the page.
+
+This version runs the same Python engine inside the browser, so the drawing never leaves your
+machine. How local mode works:
+
+- The page is static (GitHub Pages). The engine runs in a Web Worker on
+  [Pyodide](https://pyodide.org) (CPython compiled to WebAssembly), so the page does not freeze.
+  A progress bar shows each stage.
+- DWG files are converted to DXF in the browser by GNU LibreDWG compiled to WebAssembly. PDFs are
+  read with PyMuPDF's WebAssembly build, so extraction is the same code as on the server.
+- On the first visit the browser downloads about 27 MB (the runtime and the engine). It adds
+  17 MB the first time you open a PDF and 11 MB for a DWG. After that the files are cached. All of
+  them are served from the site itself, not from a CDN.
+- Jobs are kept in this browser (IndexedDB) until you clear the site's data. **Save project**
+  writes a `.naap.json` file (geometry and your answers; a PDF job also includes the PDF). You can
+  open that file later, or in another browser, from the upload page.
+- Very large drawings need a desktop browser with several GB of free memory. If the browser runs
+  out, use the server version below.
+
+To build and serve the site yourself:
+
+```sh
+uv run python scripts/build_site.py --serve      # http://127.0.0.1:8780 (site/ is git-ignored)
+```
+
+Add `?mode=server` or `?mode=local` to the URL to choose the transport (the default comes from
+`web/config.js`).
+
+### Local server
 
 You need Python 3.12+ and [uv](https://docs.astral.sh/uv/). DWG input also needs
 [LibreDWG](https://www.gnu.org/software/libredwg/) (`brew install libredwg` on macOS). DXF and PDF
@@ -154,7 +185,6 @@ One room label is wrong on purpose.
 
 ## Roadmap
 
-- A browser-only version on GitHub Pages (no server; the drawing stays in the browser)
 - CPWD DSR rates for the abstract, giving an estimate
 - RA bills: measurements recorded against the book over time
 - BBS (bar bending schedule) export from the structural reading
@@ -170,8 +200,14 @@ uv run python samples/make_sample.py && uv run python web/mock/build_mock.py   #
 - `app/`: FastAPI app, job pipeline, DXF/PDF extraction, clustering and role guesses
 - `engine/`: architectural measurement, checks and the xlsx export
 - `engine_struct/`: structural PDF engine
+- `app/service.py`: the job API without a web framework, shared by the server (`app/main.py`)
+  and the browser (`app/browser.py`, run on Pyodide by `web/worker/naap-worker.js`)
 - `web/`: the UI. It is plain ES modules with self-hosted fonts and has no build step (see
-  `web/README.md`).
+  `web/README.md`). `web/js/api.js` is the only file that knows whether it talks to the server or
+  to the in-browser worker.
+- `scripts/build_site.py`: assembles the GitHub Pages site in `site/`.
+  `scripts/browser_smoke.py` runs it end to end in headless Chromium (needs Playwright:
+  `uv run --with playwright==1.65.0 python scripts/browser_smoke.py`).
 - `tests/`: public tests on synthetic drawings
 - `tests/private/`: your own drawings (git-ignored)
 
@@ -183,5 +219,6 @@ committing client drawings.
 ## Licence
 
 Naap is licensed under [AGPL-3.0](LICENSE). It uses PyMuPDF (AGPL-3.0), ezdxf, openpyxl and FastAPI
-(MIT), and runs LibreDWG (GPL-3.0) as an external program. The fonts are under OFL-1.1 and LGPL-3.0
+(MIT), and runs LibreDWG (GPL-3.0) as an external program. The browser version bundles Pyodide
+(MPL-2.0) and LibreDWG compiled to WebAssembly (GPL-3.0). The fonts are under OFL-1.1 and LGPL-3.0
 with the font exception. See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).

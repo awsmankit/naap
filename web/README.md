@@ -13,6 +13,14 @@ uv run python web/dev_server.py # UI on http://127.0.0.1:8778 (proxies /api + /o
 - Rebuild the mock (after engine changes; `tests/test_sample.py` checks it): `uv run python web/mock/build_mock.py`.
 - "Process the sample house" on the upload page fetches `GET /api/sample/sample-house.dxf` and uploads it like any file.
 
+## Server or in-browser
+`js/api.js` is the only module that knows the transport. `config.js` sets `mode`: `"server"` (fetch to the FastAPI app,
+the repo default) or `"local"` (the same calls answered by `worker/naap-worker.js`, which runs `app/browser.py` ->
+`app/service.py` on Pyodide; DWG goes through `worker/dwg-worker.js`, LibreDWG as WebAssembly). `?mode=` overrides it.
+`scripts/build_site.py` writes the site with `mode: "local"` plus `vendor/` (Pyodide, wheels, LibreDWG), `py/naap.zip`
+and `worker/assets.json`; web/ itself has no vendor files, so local mode needs the built site.
+Local-only routes: `GET .../project` (a `.naap.json` download) and project import (`openProject` in api.js).
+
 ## API used
 `GET /api/meta`, `POST /api/jobs`, `GET /api/jobs[/{id}]`, `GET .../geometry`, `GET|PUT .../config`,
 `POST .../check`, `POST .../build`, `GET .../mb`, `GET .../mb.xlsx`, `GET /openapi.json` (to detect `/mb`).

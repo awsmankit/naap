@@ -122,6 +122,11 @@ main { flex: 1; min-height: 0; display: flex; }
 .stages li.run::before { border-style: dashed; animation: spin 2.4s linear infinite; }
 .stages li.fail { color: var(--err-d); }
 .stages li small { display: block; color: var(--mute-d); font-weight: 400; font-size: 13px; margin-top: 2px; }
+.pbar { display: block; height: 4px; margin-top: 7px; background: var(--rule-d); border-radius: 2px; overflow: hidden; }
+.pbar i { display: block; height: 100%; width: 0; background: var(--signal); transition: width .2s; }
+.pbar.busy i { width: 30%; animation: pbar 1.4s ease-in-out infinite; }
+@keyframes pbar { from { transform: translateX(-100%); } to { transform: translateX(340%); } }
+@media (prefers-reduced-motion: reduce) { .pbar.busy i { animation: none; width: 100%; opacity: .5; } }
 @keyframes spin { to { transform: rotate(360deg); } }
 .err { color: #ffd9d2; background: #4a1d1a; border: 1px solid #8f3a31; padding: 10px 12px; border-radius: 4px; margin: 14px 0 0; }
 .recent { list-style: none; margin: 0; padding: 0; }

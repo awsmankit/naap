@@ -42,3 +42,7 @@ tests/private/
 *.mov
 *.mp4
 !docs/media/**
+
+# Built GitHub Pages site and its download cache (scripts/build_site.py)
+site/
+.cache/

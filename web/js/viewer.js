@@ -260,7 +260,8 @@ export class Viewer {
       this.draw();
     };
     img.onerror = () => { onload(null); };
-    img.src = src;
+    // src is a URL, or a promise of one (the in-browser engine renders sheets to object URLs)
+    Promise.resolve(src).then((u) => { img.src = u; }, () => onload(null));
     return img;
   }
 
@@ -347,14 +348,22 @@ export class Viewer {
     const path = new Path2D(), fill = new Path2D();
     const texts = new Set();
     const ox = this.ox, oy = this.oy;
-    const idx = g.entities || [].concat(...(g.refs || []).map((r) => this.refEntities(r)));
+    // many lines share one drawing ref (every bar line of a beam): bake each ref and entity once
+    const seen = new Set();
+    const refs = (g.refs || []).filter((r) => {
+      const k = `${r.kind}|${r.bbox ? r.bbox.join(",") : ""}|${(r.handles || []).join(",")}`;
+      if (seen.has(k)) return false;
+      seen.add(k);
+      return true;
+    });
+    const idx = g.entities || [...new Set([].concat(...refs.map((r) => this.refEntities(r))))];
     for (const i of idx) {
       const e = this.E[i];
       if (e.t === "T") texts.add(i);
       else if (e.t === "H") addLoops(path, e.p, ox, oy);
       else addEntity(path, e, ox, oy);
     }
-    let boxes = (g.refs || []).map((r) => r.bbox).filter(Boolean);
+    let boxes = refs.map((r) => r.bbox).filter(Boolean);
     if (!boxes.length && g.focus) boxes = g.focus;
     return { ...g, path, fill, texts, count: idx.length, boxes };
   }
