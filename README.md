@@ -77,11 +77,21 @@ Settings (environment variables):
 
 ### Docker
 
+Ready-made image (no build needed):
+
+```sh
+docker run -p 8000:8000 -v naap-data:/data ghcr.io/awsmankit/naap:latest   # http://localhost:8000
+```
+
+Or build it yourself:
+
 ```sh
 docker compose up --build       # http://localhost:8000, jobs kept in the naap-data volume
 ```
 
 The image builds LibreDWG from source in a separate stage, so DWG uploads work in the container.
+Images are published to `ghcr.io/awsmankit/naap` on every push to `main` (`latest`, `sha-<commit>`)
+and on version tags (`v1.2.3` → `1.2.3`), after a smoke test with the sample drawing passes.
 
 ### Command line
 
