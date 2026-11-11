@@ -144,13 +144,13 @@ def roof_rows(ctx: Ctx, roof, cfg_roof: dict, slab_thk_mm: float | None, slab_fl
     a = ctx.a
     to_m = a.to_m
     c2 = (roof.grid.cell * to_m) ** 2
-    ptot = roof.parapet_h_mm
+    ptot = float(roof.parapet_h_mm or 600)
     coping_mm = float(cfg_roof.get("coping_mm") or 100)
     coping_assumed = "coping_mm" not in cfg_roof
-    p_note = f"note '{roof.parapet_note}'" if roof.parapet_note else "config (no parapet note found)"
-    if ptot is None:
-        ptot = float(cfg_roof.get("parapet_height_mm") or 600)
-        p_note += f"; total height {ptot:.0f} ASSUMED"
+    p_note = {"user": "your value (Review)",
+              "note": f"note '{roof.parapet_note}'",
+              "default": "default (no parapet note found) – ASSUMED"}[getattr(roof, "parapet_h_source", "note")]
+    h_assumed = getattr(roof, "parapet_h_source", "note") == "default"
     brick_h = max(ptot - coping_mm, 0)
     t = roof.parapet_t_mm
     out = {"coping_len": 0.0, "levels": []}
@@ -167,8 +167,9 @@ def roof_rows(ctx: Ctx, roof, cfg_roof: dict, slab_thk_mm: float | None, slab_fl
         out["coping_len"] += plen
         unk = [] if L.tos_mm is not None else ["level not given in the drawing"]
         ctx.add(T_RCC, ITEM_SLAB, "sqm", loc, 1, area, None, None,
-                f"area enclosed by the parapet outer faces on the roof plan ({lvl} from text '{L.text}'); "
-                "thickness/beams not in drawing" + ("; " + unk[0] if unk else ""), [sref, tref], slab_flags, assumed=bool(unk),
+                "area enclosed by the parapet outer faces on the roof plan "
+                + (f"({lvl} from text '{L.text}')" if L.tos_mm is not None else "(no T.O.S. level written on the roof plan)")
+                + "; thickness/beams not in drawing", [sref, tref], slab_flags, assumed=bool(unk),
                 desc="Slab area")
         if slab_thk_mm:
             ctx.add(T_RCC, ITEM_SLAB_VOL, "cum", loc, 1, area, None, slab_thk_mm / 1000,
@@ -177,7 +178,8 @@ def roof_rows(ctx: Ctx, roof, cfg_roof: dict, slab_thk_mm: float | None, slab_fl
             ctx.add(T_MASONRY, ITEM_PARAPET, "cum", loc, 1, plen, t / 1000, brick_h / 1000,
                     f"centre line of paired parapet lines ({len(L.strips)} runs, joined at corners); thickness {t:.0f} and "
                     f"total height {ptot:.0f} from {p_note}; brick height = total - coping {coping_mm:.0f}"
-                    + (" (coping thickness ASSUMED)" if coping_assumed else ""), strip_refs, assumed=coping_assumed, desc="Parapet")
+                    + (" (coping thickness ASSUMED)" if coping_assumed else ""), strip_refs, assumed=coping_assumed or h_assumed,
+                    desc="Parapet")
             ctx.add(T_ROOF, ITEM_COPING, "m", loc, 1, plen, None, None,
                     "same centre line as the parapet; coping section not dimensioned", strip_refs, desc="Coping")
         # coba / terrace treatment

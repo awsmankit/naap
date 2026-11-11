@@ -194,6 +194,31 @@ def check(d: Path, cfg: dict) -> dict:
             "abstract": [{"item": a.item, "qty": a.qty, "unit": a.unit, "trade": a.trade} for a in result.abstract]}
 
 
+def review(d: Path, cfg: dict | None) -> dict:
+    """What the Review step shows (meta["review"] of an engine run: view purposes, floors per plan, heights
+    with their sources, and the open questions). Reuses the cached result when `cfg` is the saved config
+    and the cache is fresh; otherwise runs the engine on `cfg` (which saves it, like /check)."""
+    t = time.time()
+    data = None
+    if not isinstance(cfg, dict) or cfg == read_config(d):
+        data = json.loads(fresh_cache(d).read_text())
+        if not (data.get("meta") or {}).get("review"):
+            data = None   # cached before the review summary existed
+        cfg = read_config(d)
+    if data is None:
+        if not isinstance(cfg.get("regions", []), list):
+            raise ServiceError(400, "config must be an object")
+        data = result_json(d, run_and_cache(d, cfg, False))
+    rv = dict((data.get("meta") or {}).get("review") or {})
+    counts = {"error": 0, "warning": 0, "missing": 0}
+    for f in data.get("flags") or []:
+        if f.get("status") == "open" and f.get("severity") in counts:
+            counts[f["severity"]] += 1
+    rv["summary"] = {"open": counts, "total": len(data.get("flags") or [])}
+    rv["seconds"] = round(time.time() - t, 2)
+    return rv
+
+
 def build(d: Path, cfg: dict) -> dict:
     t = time.time()
     result = run_and_cache(d, cfg, True)

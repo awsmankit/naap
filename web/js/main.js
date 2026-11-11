@@ -8,7 +8,7 @@ import { api, MOCK, LOCAL, CAN_PROJECTS, UNREACHABLE, loadMB, putConfig, runChec
 import { Viewer } from "./viewer.js";
 import { tradeOf, SEV } from "./theme.js";
 import { renderLedger, applySelection, renderFoot, renderTabs } from "./ledger.js";
-import { renderReview } from "./review.js";
+import { renderReview, loadReview, blocked } from "./review.js";
 import { structGroups, sheetName } from "./struct.js";
 import { assess, markReading, clearReading, lastReading, OOM_RE, device } from "./guard.js";
 import { registerSW } from "./pwa.js";
@@ -60,8 +60,18 @@ function setStep(step, { nav = true } = {}) {
   // a new step is a new history entry, so the browser's Back button walks back through the steps
   if (location.hash !== hash) history[nav && prev !== step && prev ? "pushState" : "replaceState"](null, "", `${location.pathname}${q}${hash}`);
   document.title = step === "upload" ? "Naap · Drawing to Measurement Book" : `${STEP_LABEL[step]} · ${S.job?.filename || "drawing"} · Naap`;
-  if (step === "review") renderReview();
+  if (step === "review") { renderReview(); if (prev && prev !== "review" && S.cfg) loadReview(); }
   if (step === "mb") renderLedger();
+  // keyboard and screen-reader users: the control they used (Build, the sample link) is now hidden, so
+  // focus would fall back to <body>; move it to the new step's heading or tab instead
+  if (prev && prev !== step) setTimeout(() => {
+    const a = document.activeElement;
+    if (a && a !== document.body && !a.closest("[hidden]")) return;
+    const t = step === "review" ? $("#reviewPanel h2") : step === "mb" ? $("#ledgerTitle") : $("#upTitle");
+    if (!t) return;
+    if (!t.matches("button, a, input")) t.tabIndex = -1;
+    t.focus({ preventScroll: true });
+  }, 0);
 }
 
 $$("#steps li").forEach((li) => li.querySelector("button").addEventListener("click", () => {
@@ -312,7 +322,7 @@ function ensureViewer() {
     if (S.isPdf) {
       const sh = v.sheetAt(x, y);
       $("#coords").textContent = sh ? `${sh.label} · ${fmt(x - sh.bbox[0], 1)}, ${fmt(sh.bbox[3] - y, 1)} pt` : "";
-    } else $("#coords").textContent = `${fmt(x, 0)}, ${fmt(y, 0)} ${S.geo?.units || ""}`;
+    } else $("#coords").textContent = `${fmt(x, 0)}, ${fmt(y, 0)} ${S.geo?.display_units || S.geo?.units || ""}`;
   });
   v.on("pick", onPick);
   v.on("flag", (id) => { if (S.step === "mb") { setTab("flags"); select("flag", id, { from: "drawing" }); } });
@@ -344,7 +354,7 @@ async function openJob(id, step = "review") {
   await useDrawing(job, geo, cfg);
   // opening the book: use the saved result as it is (saving the config first would make it stale)
   if (step === "mb") await buildAndShow({ rebuild: false, save: false, fallback: "review" });
-  else setStep("review", { nav: false });
+  else { setStep("review", { nav: false }); loadReview(); }
 }
 
 async function useDrawing(job, geo, cfg) {
@@ -355,6 +365,7 @@ async function useDrawing(job, geo, cfg) {
   cfg.layer_roles = cfg.layer_roles || {};
   cfg.layer_style = cfg.layer_style || {};
   S.mb = null;
+  S.review = null; S.reviewState = null; S.reviewStale = false; S.reviewMs = null; S.askOpen = null; S.rvFloorEdit = null;
   await document.fonts.load("16px Osifont").catch(() => {});
   const v = S.viewer;
   v.setGeometry(geo, cfg.layer_roles, allRegionsBox());
@@ -367,19 +378,17 @@ async function useDrawing(job, geo, cfg) {
   v.setClip(null);
   $("#tRaster").hidden = !S.isPdf || !job.id;
   $("#tCal").hidden = !S.isPdf || !job.id;
-  $$('#rvTabs [data-tab="heights"]').forEach((b) => { b.hidden = S.isPdf; });
   $('#rvTabs [data-tab="views"]').firstChild.textContent = S.isPdf ? "Sheets " : "Views ";
-  if (S.isPdf && S.rvTab === "heights") S.rvTab = "views";
   $("#rvIntro").textContent = S.isPdf
-    ? "A structural PDF set: each sheet is read for plans, schedules and notes. Check the sheets, then build the book. Scales are calibrated per sheet."
-    : "Include the views to measure, confirm layer roles and heights, then build the book.";
+    ? "A structural PDF set: each sheet is read for plans, schedules and notes. Answer the questions, check the storey heights, then build the book. Scales are calibrated per sheet."
+    : "See what each view is used for, confirm floors and heights, answer the questions, then build the book.";
   renderSheetStrip();
   if (S.isPdf) setSheet(geo.sheets.find((s) => !s.scanned)?.sheet ?? geo.sheets[0]?.sheet, { fit: false });
   v.fit(homeBox() || v.home, false);
   $("#stageMsg").hidden = true;
   $("#jobName").replaceChildren(el("b", {}, job.filename), S.isPdf
     ? ` · ${geo.sheets.length} sheets · ${fmt(geo.entities.length, 0)} entities`
-    : ` · ${fmt(geo.entities.length, 0)} entities · ${geo.units}`);
+    : ` · ${fmt(geo.entities.length, 0)} entities · ${geo.display_units || geo.units}`);
   renderLayerPop();
 }
 
@@ -559,6 +568,7 @@ function reselect(prev) {
 // ================================================================ MB
 async function buildAndShow({ rebuild = true, save = true, fallback = null } = {}) {
   const btn = $("#btnBuild");
+  if (rebuild && S.step === "review" && blocked()) { toast("Tick at least one plan to measure before building the book.", true); return; }
   btn.disabled = true; btn.textContent = "Building…";
   try {
     if (!S.offline && save) await saveConfig();
@@ -574,6 +584,7 @@ async function buildAndShow({ rebuild = true, save = true, fallback = null } = {
     if (fallback) setStep(fallback, { nav: false });
   } finally {
     btn.disabled = false; btn.textContent = "Build measurement book";
+    if (S.step === "review") renderReview();
   }
 }
 $("#btnBuild").addEventListener("click", () => buildAndShow({ rebuild: true }));

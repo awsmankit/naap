@@ -208,6 +208,11 @@ def _process(job_id: str) -> None:
         t = time.time()
         geometry = extract(dxf)
         timings["parse_s"] = round(time.time() - t, 1)
+        # $INSUNITS often lies (inches or metres on a drawing in mm): the engine then measures in mm
+        # (engine.analysis), and the viewer's scale bar, coordinates and header must say the same
+        from engine.analysis import _looks_like_mm
+        if geometry.get("units") not in ("mm", "pt") and _looks_like_mm(geometry):
+            geometry["display_units"] = "mm"
         (d / "geometry.json").write_text(json.dumps(geometry, separators=(",", ":")))
 
         update_state(d, status="clustering", message="Finding view regions...", timings=timings)
@@ -222,7 +227,7 @@ def _process(job_id: str) -> None:
             "layers": len(geometry["layers"]),
             "regions": len(clusters["regions"]),
             "truncated": geometry["truncated"],
-            "units": geometry["units"],
+            "units": (f"mm (header says {geometry['units']})" if geometry.get("display_units") else geometry["units"]),
             "dxf_mb": round(dxf.stat().st_size / 1e6, 1),
         })
     except subprocess.TimeoutExpired:

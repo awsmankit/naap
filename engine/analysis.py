@@ -195,7 +195,8 @@ class Analysis:
         return self.reg_by_id[rid].get("kind", "other") if rid is not None and rid in self.reg_by_id else None
 
     def is_plan(self, rid: int | None) -> bool:
-        return rid in self.included and self.kind(rid) == "plan"
+        """Measured as a plan: included, and a plan (or another view the user chose to measure: "measure": true)."""
+        return rid in self.included and (self.kind(rid) == "plan" or bool(self.reg_by_id[rid].get("measure")))
 
     def mm(self, v: float) -> float:
         return v * self.to_m * 1000

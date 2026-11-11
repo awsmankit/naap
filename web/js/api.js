@@ -152,6 +152,7 @@ const json = (body) => ({ method: "POST", headers: { "content-type": "applicatio
 export const putConfig = (id, cfg) => api(`/api/jobs/${id}/config`, { ...json(cfg), method: "PUT" });
 export const runCheck = (id, cfg) => api(`/api/jobs/${id}/check`, json(cfg));
 export const runBuild = (id, cfg) => api(`/api/jobs/${id}/build`, json(cfg));
+export const runReview = (id, cfg) => api(`/api/jobs/${id}/review`, json(cfg));
 export const putCalibration = (id, body) => api(`/api/jobs/${id}/calibration`, { ...json(body), method: "PUT" });
 
 /**

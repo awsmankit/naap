@@ -221,6 +221,7 @@ _ROUTES: list[tuple[str, re.Pattern, str]] = [(m, re.compile(f"^{p}$"), name) fo
     ("POST", _JOB + r"/cluster", "cluster"),
     ("POST", _JOB + r"/check", "check"),
     ("POST", _JOB + r"/build", "build"),
+    ("POST", _JOB + r"/review", "review"),
     ("GET", _JOB + r"/mb", "mb"),
     ("GET", _JOB + r"/sheets", "sheets"),
     ("GET", _JOB + r"/calibration", "get_calibration"),
@@ -266,6 +267,8 @@ def _dispatch(name: str, m: dict, q: dict, body):
         return service.check(d, body)
     if name == "build":
         return service.build(d, body)
+    if name == "review":
+        return service.review(d, body)
     if name == "mb":
         return _file(service.fresh_cache(d), "application/json")
     if name == "sheets":

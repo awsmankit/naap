@@ -152,6 +152,11 @@ def _parse_floor_value(v) -> tuple[list[int] | None, int | None]:
     s = str(v or "").strip()
     if not s:
         return None, None
+    # an explicit multiplier after the floors: '6-9 x3' / '6-9 ×3' (fewer identical floors than the range)
+    mx = re.search(r"\s*[x×*]\s*(\d{1,2})\s*$", s, re.I)
+    if mx and s[:mx.start()].strip():
+        fl, m = _parse_floor_value(s[:mx.start()])
+        return fl, int(mx.group(1)) if int(mx.group(1)) >= 1 else m
     fl, _ = parse_floors(s)
     if fl:
         return fl, len(fl)
@@ -227,6 +232,8 @@ def plan_storeys(a, cfg: dict, saved: dict, fid, Flag) -> tuple[dict, list]:
                 if m:
                     p["multiplier"] = m
         p["group"] = group_name(p["floors"], None) if p["floors"] else p["name"]
+        if p["floors"] and p["multiplier"] != len(p["floors"]):   # an explicit multiplier ('6-9 x3')
+            p["group"] = re.sub(r"\s*\(x\d+\)$", "", p["group"]) + f" (x{p['multiplier']})"
         if not p["floors"] and p["multiplier"] > 1:
             p["group"] = f"{p['name']} (x{p['multiplier']})"
         p["order"] = float(p["floors"][0]) if p["floors"] else 500.0

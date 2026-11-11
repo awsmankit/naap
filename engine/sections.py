@@ -90,3 +90,71 @@ def section_maps(a) -> list[SectionMap]:
         inv = {mode: to_plan}
         out.append(SectionMap(cut["letter"], cut, sec, best[0], inv[best[0]], best[1]))
     return out
+
+
+# ---------------------------------------------------------------- levels written in section views
+# "ROOF TOS.+3450", "T.O.S. +4800"; floor levels "PLINTH lvl+450", "F.F.L. +300", "F.G.L. ±00"
+SEC_TOS = re.compile(r"T\.?\s*O\.?\s*S\.?\D{0,12}?([+\-±]?)\s*(\d{3,6})", re.I)
+SEC_FLOOR = re.compile(r"\b(PLINTH|F\.?\s*F\.?\s*L|FLOOR\s*(?:LVL|LEVEL))\b\.?\D{0,10}?([+\-±]?)\s*(\d{1,5})", re.I)
+SEC_NUM = re.compile(r"^\s*(\d{3,5})\s*$")
+
+
+def section_levels(a) -> list[dict]:
+    """Per section view: the roof levels (T.O.S.) and floor levels (plinth / F.F.L.) written in it,
+    plus the plain numbers (dimension values and numeric texts) that can confirm a height."""
+    out = {}
+    for r in a.regions:
+        if r.get("kind") == "section":
+            out[r["id"]] = {"rid": r["id"], "name": r.get("name", ""), "tos": {}, "floor": {}, "nums": set()}
+    if not out:
+        return []
+    for i, t, rid in a.texts:
+        sec = out.get(rid)
+        if sec is None:
+            continue
+        s = " ".join(str(t["s"]).split())
+        m = SEC_TOS.search(s)
+        if m:
+            v = float(m.group(2)) * (-1 if m.group(1) == "-" else 1)
+            sec["tos"].setdefault(v, i)
+            continue
+        m = SEC_FLOOR.search(s)
+        if m:
+            v = float(m.group(3)) * (-1 if m.group(2) == "-" else 1)
+            sec["floor"].setdefault(v, (i, m.group(1).upper().replace(" ", "")))
+            continue
+        m = SEC_NUM.match(s)
+        if m:
+            sec["nums"].add(float(m.group(1)))
+    for i, e, rid in a.dims:
+        if rid in out and e.get("m"):
+            out[rid]["nums"].add(float(round(a.mm(float(e["m"])))))
+    return [s for s in out.values() if s["tos"] or s["floor"]]
+
+
+def roof_height_from_sections(secs: list[dict], tos_mm: float) -> dict | None:
+    """Floor level to top of slab under a roof at T.O.S. `tos_mm`, read from a section that shows that level:
+    T.O.S. minus the plinth / floor level that the section dimensions (T.O.S. - floor written as a number),
+    else the only floor level in that section. Returns {"to_slab_top_mm", "floor_mm", "section", "rid",
+    "dimensioned", "text"} or None."""
+    best = None
+    for s in secs:
+        if not any(abs(v - tos_mm) < 1 for v in s["tos"]):
+            continue
+        floors = sorted(s["floor"])
+        for f in floors:
+            h = tos_mm - f
+            if h > 1500 and any(abs(n - h) < 1 for n in s["nums"]):
+                cand = (2, h, f, s)
+                break
+        else:
+            cand = (1, tos_mm - floors[0], floors[0], s) if len(floors) == 1 and tos_mm - floors[0] > 1500 else None
+        if cand and (best is None or cand[0] > best[0]):
+            best = cand
+    if best is None:
+        return None
+    rank, h, f, s = best
+    word = {"PLINTH": "plinth"}.get(s["floor"][f][1], "floor level")
+    return {"to_slab_top_mm": h, "floor_mm": f, "section": s["name"], "rid": s["rid"], "dimensioned": rank == 2,
+            "text": f"{s['name']}: T.O.S. {tos_mm:+.0f} - {word} {f:+.0f} = {h:.0f}"
+                    + (" (dimensioned)" if rank == 2 else "")}

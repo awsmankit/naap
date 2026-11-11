@@ -107,6 +107,16 @@ async def check(job_id: str, request: Request):
     return await run_in_threadpool(service.check, d, cfg)
 
 
+@app.post("/api/jobs/{job_id}/review")
+async def review(job_id: str, request: Request):
+    """Review summary for a config: view purposes, floors per plan, heights with their sources and the
+    open questions (meta.review of an engine run; the cached run is reused when the config is unchanged)."""
+    d = service.ready(job_id)
+    body = await request.body()
+    cfg = await request.json() if body else None
+    return await run_in_threadpool(service.review, d, cfg)
+
+
 @app.post("/api/jobs/{job_id}/build")
 async def build(job_id: str, request: Request):
     d = service.ready(job_id)
@@ -191,7 +201,12 @@ class _UI(StaticFiles):
     async def get_response(self, path, scope):
         if path.endswith((".py", ".pyc")) or "__pycache__" in path:
             raise StarletteHTTPException(404)
-        return await super().get_response(path, scope)
+        res = await super().get_response(path, scope)
+        # revalidate every time (ETag, so a 304 when unchanged): ES modules otherwise get heuristic
+        # caching, and after an update the browser can mix an old review.js with a new main.js
+        if not path.startswith(("fonts/", "icons/")):
+            res.headers["Cache-Control"] = "no-cache"
+        return res
 
 
 app.mount("/", _UI(directory=WEB, html=True), name="web")

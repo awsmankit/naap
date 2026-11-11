@@ -165,10 +165,12 @@ def build_struct_mb(geo: dict, cfg: dict | None = None) -> MBResult:
 
     # ---------------- notes
     notes = {}
+    notes_sheet = None
     for sh in shs:
         n = parse_notes(sh)
         if n["dev_length"] or n["covers"]:
             notes = n
+            notes_sheet = sh.n
             break
     meta["notes"] = {k: v for k, v in notes.items() if k not in ("refs", "text")}
     nref = notes.get("refs", {})
@@ -373,6 +375,10 @@ def build_struct_mb(geo: dict, cfg: dict | None = None) -> MBResult:
                    assumptions=A.assumptions, meta=meta, flags=list(A.flags.values()))
     meta["steel"] = steel_summary(A.steel)
     meta["foundation_mode"] = mode
+    try:
+        meta["review"] = struct_review(shs, roles, region, tabs, notes_sheet, mode, A, cfg)
+    except Exception as exc:  # noqa: BLE001  (the review summary must never stop a build)
+        meta["review"] = {"kind": "structural", "error": f"{type(exc).__name__}: {exc}"}
     return res
 
 
@@ -1176,3 +1182,94 @@ def steel_summary(steel: list[dict]) -> dict:
     return {"by_dia_kg": {d: round(v, 1) for d, v in sorted(by_dia.items())},
             "by_element_kg": {e: {d: round(v, 1) for d, v in sorted(m.items())} for e, m in by_el.items()},
             "total_kg": round(tot, 1), "assumed_kg": round(assumed, 1)}
+
+
+# ====================================================================== review step
+ROLE_REASON = {"pile": "Pile layout: piles counted and measured", "raft": "Raft: area and thickness measured",
+               "footing": "Footings measured", "plinth": "Plinth beams measured", "floor": "Beams and slabs measured"}
+
+
+def struct_review(shs, roles, region, tabs, notes_sheet, mode, A: Acc, cfg: dict) -> dict:
+    """What the Review step shows for a PDF set (see engine/review.py for the architectural one)."""
+    from engine.review import LABEL, flag_q
+    tab_sheets: dict = defaultdict(list)
+    for t in tabs:
+        tab_sheets[t.get("sheet")].append(t.get("name") or "schedule")
+    views, plans = [], []
+    for k, sh in enumerate(shs):
+        role, lab = roles[sh.n], sheet_label(sh)
+        fs = sh.title.get("floor_scope") or {}
+        v = {"id": k, "sheet": sh.n, "kind": role, "purpose": "unused", "reason": "", "feeds": [], "overlaps": [], "warn": ""}
+        if sh.info.get("text_as_geometry"):
+            v["reason"] = "Text plotted as lines: nothing written on it can be read"
+        elif role in ROLE_REASON and sh.n in region:
+            v["purpose"] = "measured"
+            v["reason"] = ROLE_REASON[role]
+            if role == "pile" and mode == "raft_only" or role == "raft" and mode == "piles_only":
+                v["purpose"], v["reason"] = "unused", f"Not measured: foundation answered as {mode.replace('_', ' ')}"
+            if tab_sheets.get(sh.n):
+                v["reason"] += "; schedules: " + ", ".join(dict.fromkeys(tab_sheets[sh.n])).lower()
+            if role == "floor":
+                mult = int(fs.get("multiplier") or 1)
+                plans.append({"id": k, "sheet": sh.n, "name": lab, "group": fs.get("label") or lab, "multiplier": mult,
+                              "floors": list(range(int(fs["from"]), int(fs["to"]) + 1)) if fs.get("from") is not None and fs.get("to") is not None else [],
+                              "source": "title block" if fs else ""})
+        elif role in ROLE_REASON:
+            v["reason"] = "No plan with columns found on it, so nothing was measured"
+        elif tab_sheets.get(sh.n) or role == "column":
+            v["purpose"] = "sizes"
+            v["reason"] = ("Schedules: " + ", ".join(dict.fromkeys(tab_sheets[sh.n])).lower()) if tab_sheets.get(sh.n) \
+                else "Column schedule"
+        elif notes_sheet == sh.n:
+            v["purpose"] = "sizes"
+            v["reason"] = "General notes: grade, covers and development lengths"
+        elif role in ("lift", "stair"):
+            v["reason"] = f"{'Lift' if role == 'lift' else 'Staircase'}: not measured (enter its RCC volume below)"
+        else:
+            v["reason"] = "Nothing on it is measured"
+        v["label"] = LABEL[v["purpose"]]
+        views.append(v)
+    flags = list(A.flags.values())
+    col = [f for f in flags if f.id.startswith("struct:columns:height:")]
+    fh = cfg.get("floor_heights_mm") or {}
+    rows = []
+    for f in col:
+        lab = f.id.split(":", 3)[3]
+        val = f.value if f.status == "resolved" else fh.get(lab)
+        rows.append({"key": f.id, "kind": "column", "name": (f.input or {}).get("label") or lab, "plan": lab,
+                     "height_mm": float(val) if val not in (None, "") else None,
+                     "source": "your answer" if f.status == "resolved" else ("your config" if lab in fh else
+                                                                             "not written: column rows are 0 until entered"),
+                     "assumed": f.status != "resolved" and lab not in fh, "confirmed": f.status != "open", "flag_ids": [f.id]})
+    fnd = A.flags.get("struct:foundation:pile-vs-raft")
+    sunk = A.flags.get("struct:slabs:sunken-depth")
+    heights = {"multi": True, "rows": rows,
+               "foundation": {"value": mode, "options": ["piled_raft", "piles_only", "raft_only"],
+                              "source": "your answer" if fnd is not None and fnd.status == "resolved" else
+                              ("assumed – please confirm" if fnd is not None else "only one foundation sheet"),
+                              "assumed": fnd is not None and fnd.status == "open",
+                              "flag_ids": [fnd.id] if fnd is not None else []},
+               "sunken": {"value": sunk.value if sunk is not None and sunk.status == "resolved" else None,
+                          "source": "your answer" if sunk is not None and sunk.status == "resolved" else
+                          ("not written – please enter" if sunk is not None else "no sunken slabs found"),
+                          "assumed": sunk is not None and sunk.status == "open", "flag_ids": [sunk.id] if sunk is not None else []}}
+    want = ("struct:columns:height:", "struct:foundation:pile-vs-raft", "struct:slabs:sunken-depth", "struct:notes:grade",
+            "struct:notes:dev-length")
+    qs = []
+    for f in flags:
+        cal = f.id.startswith("struct:calibration:") and f.severity == "missing"
+        if not (f.id.startswith(want) or cal):
+            continue
+        q = flag_q(f, lambda f: f.id)
+        q["topic"] = "heights" if f.id.startswith("struct:columns:height:") else (
+            "choice" if "foundation" in f.id else "structure")
+        qs.append(q)
+    qs.sort(key=lambda q: ({"choice": 0, "heights": 1, "structure": 2}[q["topic"]], q["id"]))
+    n_floors = sum(p["multiplier"] for p in plans)
+    building = {"multi": True, "storeys": n_floors, "typical_groups": sum(1 for p in plans if p["multiplier"] > 1),
+                "text": (f"{len(plans)} floor slab sheet{'s' if len(plans) != 1 else ''}" if plans
+                         else "No floor slab sheet found (sheets are recognised by their drawing title)")
+                        + (f" for {n_floors} floors" if n_floors != len(plans) else "")
+                        + (f", foundation: {mode.replace('_', ' ')}" if mode and mode != "none" else "")}
+    return {"kind": "structural", "views": views, "plans": plans, "building": building, "heights": heights,
+            "questions": qs}

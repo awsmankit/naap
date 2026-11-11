@@ -121,6 +121,16 @@ def run(site: Path, drawing: Path | None, timeout_s: float, headed: bool = False
     return out
 
 
+STRAY = r"""() => (document.body.innerText.match(/(^|[^\w-])(null|undefined|NaN|\[object Object\])(?![\w-])/g) || [])"""
+
+
+def _no_stray_text(page, where):
+    """A null or undefined that reached the page as text (Node.append(null) writes "null")."""
+    bad = page.evaluate(STRAY)
+    if bad:
+        raise RuntimeError(f"{where}: stray text {bad[:3]} on the page")
+
+
 def _steps(page, drawing, timeout_s, out, t0):
     if drawing:
         page.set_input_files("#fileInput", str(drawing))
@@ -137,6 +147,11 @@ def _steps(page, drawing, timeout_s, out, t0):
         raise RuntimeError(f"upload failed: {page.locator('#upErr').inner_text()}")
     page.wait_for_function("() => window.__dwgmb.geo && window.__dwgmb.viewer && document.querySelector('#stageMsg').hidden", timeout=timeout_s * 1000)
     out["review_s"] = round(time.time() - t0, 1)
+    if not drawing:
+        page.wait_for_function("() => document.querySelector('#rvAsk .ask-toggle')", timeout=timeout_s * 1000)
+        for tab in ("views", "layers", "heights"):
+            page.click(f"#rvTabs [data-tab={tab}]")
+            _no_stray_text(page, f"review ({tab})")
     job = page.evaluate("() => window.__dwgmb.job")
     out["timings"] = job.get("timings")
     out["entities"] = (job.get("stats") or {}).get("entities")
@@ -145,6 +160,8 @@ def _steps(page, drawing, timeout_s, out, t0):
     page.wait_for_function("() => window.__dwgmb.mb && !document.querySelector('#ledger').hidden", timeout=timeout_s * 1000)
     out["build_s"] = round(time.time() - t1, 1)
     out["rows"] = page.evaluate("() => window.__dwgmb.mb.rows.length")
+    if not drawing:
+        _no_stray_text(page, "measurement book")
     t2 = time.time()
     with page.expect_download(timeout=timeout_s * 1000) as dl:
         page.click("#btnXlsx")

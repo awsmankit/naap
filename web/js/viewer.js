@@ -216,7 +216,7 @@ export class Viewer {
   /** Drawing units per real millimetre. */
   mmUnit() {
     if (this.unitMM) return this.unitMM;
-    return { mm: 1, cm: 0.1, m: 0.001, in: 1 / 25.4, ft: 1 / 304.8, pt: 0.025 }[this.geo?.units] ?? 1;
+    return { mm: 1, cm: 0.1, m: 0.001, in: 1 / 25.4, ft: 1 / 304.8, pt: 0.025 }[this.geo?.display_units || this.geo?.units] ?? 1;
   }
 
   /** Show one sheet (bbox) or all (null). */
@@ -723,12 +723,14 @@ export class Viewer {
       const [x0, y0] = this.toScreen(r.bbox[0], r.bbox[3]), [x1, y1] = this.toScreen(r.bbox[2], r.bbox[1]);
       if (x1 < 0 || y1 < 0 || x0 > this.W || y0 > this.H) continue;
       const sel = r.id === this.selectedRegion;
-      const col = sel ? "#e9c46a" : r.include ? "rgba(233,196,106,.75)" : "rgba(147,174,195,.45)";
+      const on = this.regionMeasured ? this.regionMeasured(r) : r.include;
+      const col = sel ? "#e9c46a" : on ? "rgba(233,196,106,.75)" : "rgba(147,174,195,.45)";
       ctx.strokeStyle = col; ctx.lineWidth = sel ? 2 : 1;
-      ctx.setLineDash(r.include ? [] : [5, 5]);
+      ctx.setLineDash(on ? [] : [5, 5]);
       ctx.strokeRect(x0 - 8.5, y0 - 8.5, x1 - x0 + 17, y1 - y0 + 17);
       ctx.setLineDash([]);
-      const label = r.include ? r.name : `${r.name} (not measured)`;
+      // the Review step names what each view is used for (review.js sets regionLabel)
+      const label = this.regionLabel ? this.regionLabel(r) : r.include ? r.name : `${r.name} (not measured)`;
       ctx.fillStyle = col;
       ctx.fillText(label, x0 - 8, y0 - 13);
     }
@@ -838,7 +840,7 @@ export class Viewer {
     }
     c.strokeStyle = "#c9dcea"; c.lineWidth = 1; c.strokeRect(2.5, 16.5, px, 5);
     c.fillStyle = "#c9dcea"; c.font = `12px ${ISO}`; c.textBaseline = "alphabetic"; c.textAlign = "left";
-    const unit = this.scaleMM ? "mm" : this.geo?.units || "mm";
+    const unit = this.scaleMM ? "mm" : this.geo?.display_units || this.geo?.units || "mm";
     const label = unit === "mm" && len >= 1000 ? `${fmt(len / 1000, 2)} m` : `${fmt(len, 2)} ${unit}`;
     c.fillText("0", 0, 12);
     c.textAlign = "right"; c.fillText(label, Math.min(178, px + 14), 12);

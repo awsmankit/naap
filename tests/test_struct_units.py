@@ -92,3 +92,13 @@ def test_grid_table_and_plan_reading(tmp_path):
     assert len(pan) == 1 and not pan[0].leaked
     # clear panel between inner beam lines: (297-103) x (247-103)
     assert abs(pan[0].area_pt2 / (194 * 144) - 1) < 0.03
+
+
+def test_concrete_grade_note_wordings():
+    """'GRADE OF CONCRETE M25' was missed (only 'CONCRETE MIX M25' was read) and flagged as not written."""
+    from engine_struct.notes import concrete_grade
+    assert concrete_grade("CONCRETE MIX M25, STEEL FE500") == "M25"
+    assert concrete_grade("1. GRADE OF CONCRETE M25.") == "M25"
+    assert concrete_grade("CONCRETE GRADE: M-30") == "M30"
+    assert concrete_grade("LEAN CONCRETE M10 UNDER FOOTINGS. RCC M25") == "M25"
+    assert concrete_grade("PCC M10") is None

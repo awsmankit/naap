@@ -531,17 +531,38 @@ def find_wall_gaps(a: Analysis, skip_layers: set[int]) -> list[dict]:
             continue
         jambs.append((s, vertical, -1 if side > 0 else 1))  # gap direction = away from the wall
 
+    # indexes (large drawings have tens of thousands of wall lines; pairing every jamb with every
+    # other and testing every gap against every line was quadratic): jambs by their end positions
+    # (5 mm tolerance -> the neighbouring buckets), straight lines by position across the wall
+    tol = 5 * unit
+    span = lambda t, vt: (min(t.y1, t.y2), max(t.y1, t.y2)) if vt else (min(t.x1, t.x2), max(t.x1, t.x2))  # noqa: E731
+    jb: dict = defaultdict(list)
+    for j, (t, vt, tdir) in enumerate(jambs):
+        lo, hi = span(t, vt)
+        jb[(vt, tdir, round(lo / tol), round(hi / tol))].append(j)
+    cell = 2000 * unit
+    hsegs: dict = defaultdict(list)   # horizontal lines by y (they can block a gap between vertical jambs)
+    vsegs: dict = defaultdict(list)   # vertical lines by x
+    for o in segs:
+        if abs(o.y2 - o.y1) < 1 * unit:
+            hsegs[int(o.y1 // cell)].append(o)
+        if abs(o.x2 - o.x1) < 1 * unit:
+            vsegs[int(o.x1 // cell)].append(o)
+
     gaps, used = [], set()
     for i, (s, vert, gdir) in enumerate(jambs):
         if i in used:
             continue
-        a_lo, a_hi = (min(s.y1, s.y2), max(s.y1, s.y2)) if vert else (min(s.x1, s.x2), max(s.x1, s.x2))
+        a_lo, a_hi = span(s, vert)
         pos = s.x1 if vert else s.y1
         best = None
-        for j, (t, vt, tdir) in enumerate(jambs):
+        kl, kh = round(a_lo / tol), round(a_hi / tol)
+        cand = sorted(j for dl in (-1, 0, 1) for dh in (-1, 0, 1) for j in jb.get((vert, -gdir, kl + dl, kh + dh), ()))
+        for j in cand:
+            t, vt, tdir = jambs[j]
             if j == i or j in used or vt != vert or tdir != -gdir:
                 continue
-            b_lo, b_hi = (min(t.y1, t.y2), max(t.y1, t.y2)) if vert else (min(t.x1, t.x2), max(t.x1, t.x2))
+            b_lo, b_hi = span(t, vt)
             if abs(a_lo - b_lo) > 5 * unit or abs(a_hi - b_hi) > 5 * unit:
                 continue
             tpos = t.x1 if vert else t.y1
@@ -554,12 +575,16 @@ def find_wall_gaps(a: Analysis, skip_layers: set[int]) -> list[dict]:
         mid = (pos + tpos) / 2
         # make sure no wall line runs across the gap
         blocked = False
-        for o in segs:
-            if vert and abs(o.y2 - o.y1) < 1 * unit and a_lo - 1 <= o.y1 <= a_hi + 1 and min(o.x1, o.x2) < mid < max(o.x1, o.x2):
-                blocked = True
-                break
-            if not vert and abs(o.x2 - o.x1) < 1 * unit and a_lo - 1 <= o.x1 <= a_hi + 1 and min(o.y1, o.y2) < mid < max(o.y1, o.y2):
-                blocked = True
+        index = hsegs if vert else vsegs
+        for k in range(int((a_lo - 1) // cell), int((a_hi + 1) // cell) + 1):
+            for o in index.get(k, ()):
+                if vert and a_lo - 1 <= o.y1 <= a_hi + 1 and min(o.x1, o.x2) < mid < max(o.x1, o.x2):
+                    blocked = True
+                    break
+                if not vert and a_lo - 1 <= o.x1 <= a_hi + 1 and min(o.y1, o.y2) < mid < max(o.y1, o.y2):
+                    blocked = True
+                    break
+            if blocked:
                 break
         if blocked:
             continue
@@ -802,14 +827,46 @@ def _wall_blocks(a: Analysis, skip_layers: set[int]) -> list[dict]:
     groups = defaultdict(list)
     for i in range(len(segs)):
         groups[find(i)].append(segs[i])
+    # wall lines break at door and window gaps and between the two faces of a wall, so one building's
+    # lines fall into several connected groups whose extents overlap: join groups whose extents overlap
+    # or come within a wall thickness (300 mm) in the same view. Separate buildings or wings with a
+    # clear gap between them stay apart (each gets its own wall-height question).
+    gap = 300 * unit
+    parts = [{"bbox": _bbox([(s.x1, s.y1) for s in g] + [(s.x2, s.y2) for s in g]), "segs": g,
+              "region": a.region_of(g[0].x1, g[0].y1)} for g in groups.values()]
+    while True:   # sort-and-sweep on x, union overlapping extents; repeat until no group grows
+        parts.sort(key=lambda p: p["bbox"][0])
+        up = list(range(len(parts)))
+
+        def root(i):
+            while up[i] != i:
+                up[i] = up[up[i]]
+                i = up[i]
+            return i
+        for i, p in enumerate(parts):
+            for j in range(i + 1, len(parts)):
+                q = parts[j]
+                if q["bbox"][0] - gap > p["bbox"][2]:
+                    break
+                if (p["region"] == q["region"] and p["bbox"][1] - gap <= q["bbox"][3] and q["bbox"][1] - gap <= p["bbox"][3]):
+                    up[root(j)] = root(i)
+        joined: dict[int, dict] = {}
+        for i, p in enumerate(parts):
+            r = joined.setdefault(root(i), {"bbox": list(p["bbox"]), "segs": [], "region": p["region"]})
+            r["segs"] += p["segs"]
+            r["bbox"] = [min(r["bbox"][0], p["bbox"][0]), min(r["bbox"][1], p["bbox"][1]),
+                         max(r["bbox"][2], p["bbox"][2]), max(r["bbox"][3], p["bbox"][3])]
+        if len(joined) == len(parts):
+            break
+        parts = list(joined.values())
     blocks = []
-    for g in groups.values():
+    for pt in parts:
+        g, bb = pt["segs"], pt["bbox"]
         length = a.mm(sum(s.length for s in g))
         if length < 20000:
             continue
-        bb = _bbox([(s.x1, s.y1) for s in g] + [(s.x2, s.y2) for s in g])
         rooms = [r for r in a.rooms if bb[0] <= r.x <= bb[2] and bb[1] <= r.y <= bb[3]]
-        blocks.append({"bbox": bb, "region": a.region_of(g[0].x1, g[0].y1), "rooms": rooms, "length_mm": length})
+        blocks.append({"bbox": bb, "region": pt["region"], "rooms": rooms, "length_mm": length})
     return blocks
 
 
@@ -824,6 +881,24 @@ def _seg_dist(s: Segment, t: Segment) -> float:
     return min(pd(s.x1, s.y1, t), pd(s.x2, s.y2, t), pd(t.x1, t.y1, s), pd(t.x2, t.y2, s))
 
 
+BLOCK_TITLE = "Wall height missing for "
+
+
+def block_label(plan: str, rooms: list[str], several: bool, bb) -> str:
+    """How a civil engineer would name a group of walls with one height: the whole plan when it is one
+    building, else the walls around its rooms ("walls around BEDROOM-1, BEDROOM-2")."""
+    shown = f"{', '.join(rooms[:4])}{f' and {len(rooms) - 4} more' if len(rooms) > 4 else ''}"
+    if not several:
+        return f"all walls of {plan or 'the plan'}" + (f" ({len(rooms)} room{'s' if len(rooms) != 1 else ''}: {shown})" if rooms else "")
+    return f"walls around {shown}" if rooms else f"walls at ({bb[0]:.0f}, {bb[1]:.0f})"
+
+
+def block_name(title: str) -> str:
+    """The Heights-tab name of a wall-height flag: 'All walls of GROUND FLOOR PLAN (6 rooms: …)'."""
+    n = title[len(BLOCK_TITLE):] if title.startswith(BLOCK_TITLE) else title
+    return n[:1].upper() + n[1:]
+
+
 def check_missing(a: Analysis, skip_layers: set[int]) -> list[Flag]:
     flags = []
     plan_box = None
@@ -836,7 +911,12 @@ def check_missing(a: Analysis, skip_layers: set[int]) -> list[Flag]:
     st = getattr(a, "storeys", None) or {}
     # multi-storey: storey heights come from the level labels; roof/terrace plans are not measured as floors
     known_h = {rid for rid, p in (st.get("plans") or {}).items() if st.get("multi") and (p.get("ftf") or p.get("special"))}
-    for b in _wall_blocks(a, skip_layers):
+    blocks = _wall_blocks(a, skip_layers)
+    per_region = defaultdict(int)
+    for b in blocks:
+        if b["rooms"]:
+            per_region[b["region"]] += 1
+    for b in blocks:
         bb = b["bbox"]
         if not b["rooms"]:
             continue  # roofs/terraces/site features: heights come from parapet notes
@@ -848,11 +928,12 @@ def check_missing(a: Analysis, skip_layers: set[int]) -> list[Flag]:
         if crossed:
             continue
         names = sorted({r.name for r in b["rooms"]})
-        label = f"{', '.join(names[:4])}{'…' if len(names) > 4 else ''}" if names else f"block at ({bb[0]:.0f}, {bb[1]:.0f})"
+        label = block_label(a.region_name(b["region"]) if b["region"] is not None else "", names,
+                            per_region[b["region"]] > 1, bb)
         sizes = sorted({f"{r.w:.0f}X{r.l:.0f}" for r in b["rooms"]})
         flags.append(Flag(
             id=_fid("missing-data", f"wall-height:{bb[0]:.0f},{bb[1]:.0f}"), severity="missing", category="missing-data",
-            title=f"Wall height missing for block: {label}",
+            title=f"{BLOCK_TITLE}{label}",
             detail="No section line passes through this block, so its wall height cannot be read from the drawing."
                    + (f" Labels: {', '.join(sizes[:3])}." if sizes else ""),
             location={"bbox": bb},

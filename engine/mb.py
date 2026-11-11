@@ -43,7 +43,7 @@ import numpy as np
 
 from .analysis import (Analysis, _looks_like_mm, analyse, opening_kind, parse_opening_tag, parse_room_label,  # noqa: F401
                        parse_schedule_entry, preferred_size, schedule_sizes)
-from .checks import _fid, group_flags, run_checks, saved_status
+from .checks import _fid, block_name, group_flags, run_checks, saved_status
 from .dedup import copy_flags, dedup_flags, dedupe_geometry, plan_copies
 from .geom import UNIT_TO_M
 from .xrefs import xref_report
@@ -54,8 +54,9 @@ from .quantities import (ITEM_OPEN, T_DW, Ctx, floor_rows, grooves_rows, is_void
                          roof_rows)
 from .roof import TOS_RE, analyse_roof
 from .is1200 import CITE_BEAM, CITE_LINTEL, beam_depth, beam_schedule, brick_cfg, lintel_spec, slab_thickness
+from .review import arch_review
 from .rowid import assign_stable_ids
-from .sections import section_maps
+from .sections import roof_height_from_sections, section_levels, section_maps
 from .storeys import plan_storeys
 from .types import AbstractRow, DimRow, Flag, MBResult, MBRow, Opening, Room  # noqa: F401
 
@@ -180,7 +181,9 @@ def build_mb(geometry: dict, user_config: dict) -> MBResult:
     assumptions = []
     if roof_rids:
         pc = walls_cfg["parapet"]
-        roof = analyse_roof(a, roof_rids[0], float(pc.get("thickness_mm") or 230), _num(pc.get("height_mm")))
+        rc = cfg.get("roof") or {}
+        roof = analyse_roof(a, roof_rids[0], float(pc.get("thickness_mm") or 230), _num(pc.get("height_mm")) or 600,
+                            _num(rc.get("parapet_thickness_mm")), _num(rc.get("parapet_height_mm")))
         terr = st["levels"]["special"].get("terrace") if multi else None
         if roof is not None and terr is not None:
             # no T.O.S. text on the terrace plan: the terrace level label from the sections
@@ -207,13 +210,19 @@ def build_mb(geometry: dict, user_config: dict) -> MBResult:
     flag_zones = []
     for f in flags:
         if "wall-height" in f.refs and f.status == "resolved" and _num(f.value) and f.location and f.location.get("bbox"):
-            flag_zones.append({"name": f.title.replace("Wall height missing for block: ", "Block: "), "bbox": f.location["bbox"],
+            flag_zones.append({"name": block_name(f.title), "bbox": f.location["bbox"],
                                "height_mm": _num(f.value), "source": f"user ({f.id})", "assumed": False, "flag": f})
     smaps = []
     try:
         smaps = section_maps(a)
     except Exception:  # noqa: BLE001
         smaps = []
+    try:
+        sec_levels = section_levels(a)
+    except Exception:  # noqa: BLE001
+        sec_levels = []
+    # what the review step shows: heights per block and where each came from (engine/review.py)
+    rv: dict = {"heights": [], "smaps": smaps, "sec_levels": sec_levels, "slab_thk": slab_thk, "fps": []}
 
     plans = []
     brick_state: dict = {}
@@ -253,9 +262,28 @@ def build_mb(geometry: dict, user_config: dict) -> MBResult:
                         input={"type": "number", "label": "Wall height (mm)", "unit": "mm", "placeholder": "3000"},
                         refs=[f"height-level:{rid}:{li}"]))
                     level_flags[li] = f
+                    row = {"kind": "roof", "plan": a.region_name(rid), "rid": rid, "name": f"Under roof T.O.S. {tos}",
+                           "flag": f, "level": li, "tos": L.tos_mm}
                     if f.status == "resolved" and _num(f.value) and f.location:
                         flag_zones.append({"name": f"Roof T.O.S. {tos}", "bbox": f.location["bbox"], "height_mm": _num(f.value),
                                            "source": f"user ({f.id})", "assumed": False, "flag": f, "level": li})
+                        row.update(height_mm=_num(f.value), source="your answer", assumed=False)
+                    else:
+                        # a section through this roof gives T.O.S. - floor level: used (still to be confirmed)
+                        sug = roof_height_from_sections(sec_levels, L.tos_mm) if L.tos_mm is not None else None
+                        if sug:
+                            h = sug["to_slab_top_mm"] - (slab_thk or 0)
+                            src = sug["text"] + (f" - slab {slab_thk:.0f}" if slab_thk else
+                                                 "; slab thickness not given, not deducted") + ", NOT CONFIRMED"
+                            flag_zones.append({"name": f"Roof T.O.S. {tos}", "bbox": None, "height_mm": h, "source": src,
+                                               "assumed": True, "flag": f, "level": li, "derived": True, "region": rid})
+                            f.input = {**(f.input or {}), "placeholder": f"{h:.0f}"}
+                            f.evidence = list(f.evidence or []) + [f"suggested {h:.0f} mm, from {src}"]
+                            row.update(height_mm=h, source="from " + src.replace(", NOT CONFIRMED", ""), assumed=True, section=sug["section"], section_rid=sug["rid"], suggested=h,
+                                       to_slab_top_mm=sug["to_slab_top_mm"])
+                        else:
+                            row.update(height_mm=None, source="", assumed=True)
+                    rv["heights"].append(row)
         mat_ov = [(f.location["bbox"], str(f.value).strip().upper()) for f in flags
                   if f.category == "material" and f.status == "resolved" and f.value and f.location and f.location.get("bbox")]
         fp = build_floor(a, rid, cfg, roof if off is not None else None, storey_zones + flag_zones, mat_ov,
@@ -268,13 +296,16 @@ def build_mb(geometry: dict, user_config: dict) -> MBResult:
             fp.group = sp_.get("group", "")
         # drop per-level height flags that nothing depends on
         mw = fp.masonry | (fp.linewall >= 0)
+        derived = [k for k, z in enumerate(fp.zones) if z.get("derived")]
+        unconfirmed = (fp.hsrc == 0) | np.isin(fp.hsrc, derived) if derived else (fp.hsrc == 0)
         for li, f in list(level_flags.items()):
             zi = next((k for k, z in enumerate(fp.zones) if z.get("auto") and z.get("level") == li), None)
-            uncovered = int((mw & (fp.hsrc == 0) & (fp.zone == zi)).sum()) if zi is not None else 0
+            uncovered = int((mw & unconfirmed & (fp.zone == zi)).sum()) if zi is not None else 0
             if not uncovered and f.status == "open":
                 engine_flags.remove(f)
                 ctx.flag_by_ref[f.refs[0]].remove(f)
                 del level_flags[li]
+                rv["heights"] = [h for h in rv["heights"] if h.get("flag") is not f]
         for k, z in enumerate(fp.zones):
             if z.get("auto") and z.get("level") in level_flags:
                 z["flag"] = None
@@ -291,6 +322,7 @@ def build_mb(geometry: dict, user_config: dict) -> MBResult:
                           refs=[f"tag:{t}" for t in tags]))
         floor_rows(ctx, fp, roof_info, cfg, level_flags, finish_flags)
         plans.append(fp)
+        rv["fps"].append(fp)
         assumptions.append(f"{fp.name}: {fp.roof_note}; raster cell {fp.cell_mm:.0f} mm"
                            + (f"; counted x {fp.floors} floors" if fp.floors > 1 else "")
                            + (f"; {sp_.get('group')}" if multi else ""))
@@ -327,6 +359,7 @@ def build_mb(geometry: dict, user_config: dict) -> MBResult:
                            refs=[ref("dim", f"{e.get('m') or ''}", bb, [ctx.handle(i)])], **dim_row_fields(a, e)))
 
     all_flags = flags + engine_flags
+    remap: dict = {}
     if multi:
         # one flag per repeated finding (same check in every flat / every typical floor)
         def plan_of(f):
@@ -335,7 +368,6 @@ def build_mb(geometry: dict, user_config: dict) -> MBResult:
             x, y = ((bb[0] + bb[2]) / 2, (bb[1] + bb[3]) / 2) if bb else (loc.get("x"), loc.get("y"))
             rid = a.region_of(x, y) if x is not None else None
             return a.region_name(rid) if rid is not None else ""
-        remap: dict = {}
         all_flags = group_flags(all_flags, plan_of, remap)
         for row in ctx.rows:
             if any(i in remap for i in row.flag_ids):
@@ -364,6 +396,10 @@ def build_mb(geometry: dict, user_config: dict) -> MBResult:
     for f in all_flags:
         if f.status == "open":
             counts[f.severity] += 1
+    try:
+        review = arch_review(a, st, rv, roof, roof_rids, all_flags, cfg, walls_cfg, copies, stale, remap, brick_state)
+    except Exception as exc:  # noqa: BLE001  (the review summary must never stop a build)
+        review = {"kind": "architectural", "error": f"{type(exc).__name__}: {exc}"}
     return MBResult(ctx.rows, abstract, rooms, openings, dims, assumptions,
                     meta={"engine": "engine.mb", "project": cfg.get("project", {}).get("name", ""),
                           "open_flags": dict(counts), "units": "mm (corrected)" if a.units_note else geometry.get("units", "mm"),
@@ -371,7 +407,7 @@ def build_mb(geometry: dict, user_config: dict) -> MBResult:
                           "duplicates_removed": dinfo.get("removed", 0), "external_refs": xr_meta,
                           "plan_copies": [{"a": a.region_name(c["a"]), "b": a.region_name(c["b"]), "similarity": c["sim"],
                                            "offset": [round(v, 1) for v in c["offset"]]} for c in copies],
-                          "brickwork": brick_cfg(cfg)},
+                          "brickwork": brick_cfg(cfg), "review": review},
                     flags=all_flags)
 
 

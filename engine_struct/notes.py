@@ -29,14 +29,25 @@ def notes_block(sh: Sheet) -> list[tuple[str, list[Txt]]]:
 COVER_EL = r"(COLUMNS?|FOOTINGS?|TIE\s*BEAMS?|PLINTH\s*BEAMS?|FLOOR\s*BEAMS?|BEAMS?|SLABS?|PILES?|RAFT|WALLS?|STAIRS?)"
 
 
+GRADE_RE = re.compile(r"(?:CONCRETE\s+MIX|CONCRETE\s+GRADE|GRADE\s+OF\s+(?:RCC\s+)?CONCRETE|CONCRETE|RCC)\s*(?:SHALL\s+BE\s+|FOR\s+ALL\s+\w+\s+)?"
+                      r"[.:=\-]?\s*M\s*-?\s*(\d{2})\b", re.I)
+
+
+def concrete_grade(text: str) -> str | None:
+    """'CONCRETE MIX M25', 'GRADE OF CONCRETE M25', 'CONCRETE GRADE: M-25', 'RCC M25'; not a lean/PCC mix."""
+    for m in GRADE_RE.finditer(text):
+        if re.search(r"(LEAN|PLAIN|PCC|P\.C\.C\.?)\s*$", text[max(0, m.start() - 12):m.start()], re.I):
+            continue
+        return f"M{m.group(1)}"
+    return None
+
+
 def parse_notes(sh: Sheet) -> dict:
     lines = notes_block(sh)
     out: dict = {"sheet": sh.n, "covers": {}, "dev_length": {}, "lap": "", "grade": None, "pcc_mix": None,
                  "pile_cutoff_below_gl": None, "lift_pile_note": "", "steel": "", "refs": {}, "text": [l for l, _ in lines]}
     full = " \n".join(l for l, _ in lines)
-    m = re.search(r"CONCRETE\s+MIX\.?\s*M\s*-?\s*(\d{2})", full, re.I)
-    if m:
-        out["grade"] = f"M{m.group(1)}"
+    out["grade"] = concrete_grade(full)
     m = re.search(r"LEAN\s+CONCRETE\s+(1\s*:\s*\d\s*:\s*\d+)", full, re.I)
     if m:
         out["pcc_mix"] = m.group(1).replace(" ", "")

@@ -334,12 +334,19 @@ function renderFlags() {
     Object.keys(counts).map((sev) => el("button", {
       type: "button", "aria-pressed": String(S.sevOn[sev]), title: `Show or hide ${sev} flags`,
       onclick: () => { S.sevOn[sev] = !S.sevOn[sev]; renderLedger(); },
-    }, sevGlyph(sev), el("b", {}, counts[sev]), el("span", {}, `${SEV[sev].label}${counts[sev] === 1 ? "" : "s"}`, el("br"), "open"))));
+    }, sevGlyph(sev), el("b", {}, counts[sev]), el("span", {}, `${SEV[sev].label}${counts[sev] === 1 || sev === "missing" ? "" : "s"}`, el("br"), "open"))));
   const vis = flags.filter((f) => (S.sevOn[f.severity] ?? true)
     && (S.flagStatus === "all" || (S.flagStatus === "open" ? f.status === "open" : f.status !== "open"))
     && match(q, f.title, f.detail, f.category, ...(f.evidence || [])));
   const list = el("ul", { class: "flags" });
-  for (const f of vis) list.append(flagItem(f));
+  // a big drawing can raise thousands of flags: render a page at a time so the tab stays responsive
+  const limit = S.flagLimit || 200;
+  for (const f of vis.slice(0, limit)) list.append(flagItem(f));
+  if (vis.length > limit) {
+    list.append(el("li", { class: "flag more" }, el("span"), el("p", { class: "d" }, `Showing ${limit} of ${vis.length} flags. `,
+      el("button", { class: "link", type: "button", onclick: () => { S.flagLimit = limit + 200; renderLedger(); } }, "Show 200 more"),
+      " or narrow them with the search box and the severity buttons.")));
+  }
   if (!vis.length) list.append(el("li", { class: "flag" }, el("span"), el("p", { class: "d muted" },
     flags.length ? "Nothing in this filter." : "No flags. The checks found nothing missing or inconsistent.")));
   $("#scroller").append(el("div", { class: "flagwrap" }, sum, list));

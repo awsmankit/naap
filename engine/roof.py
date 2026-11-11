@@ -49,12 +49,14 @@ class RoofResult:
     levels: list[Level]
     strips: list[Strip]
     parapet_t_mm: float
-    parapet_h_mm: float | None     # total height from note (incl. coping) if given
+    parapet_h_mm: float | None     # total height (incl. coping): the user's, else the note's, else the config default
     parapet_note: str
     khurras: list[tuple[int, dict]]
     tanks: list[dict]
     skipped_diag: int = 0
     notes: list[str] = field(default_factory=list)
+    parapet_h_source: str = "note"   # "user" (Review / config roof.parapet_height_mm), "note" or "default"
+    parapet_t_source: str = "note"
 
 
 def _segments(a, rid, roles=("parapet",)):
@@ -87,9 +89,16 @@ def parapet_spec(a, rid, cfg_t: float, cfg_h: float | None):
     return cfg_t, cfg_h, ""
 
 
-def analyse_roof(a, rid: int, cfg_t_mm: float, cfg_h_mm: float | None) -> RoofResult | None:
+def analyse_roof(a, rid: int, cfg_t_mm: float, cfg_h_mm: float | None,
+                 user_t_mm: float | None = None, user_h_mm: float | None = None) -> RoofResult | None:
+    """Parapet size: the user's value (config roof.parapet_*_mm) wins, then the drawing's note, then the
+    config default (walls.parapet, marked as assumed in the book)."""
     unit = 1 / (a.to_m * 1000)
-    t_mm, h_mm, note = parapet_spec(a, rid, cfg_t_mm, cfg_h_mm)
+    note_t, note_h, note = parapet_spec(a, rid, None, None)
+    t_src = "user" if user_t_mm else "note" if note_t else "default"
+    h_src = "user" if user_h_mm else "note" if note_h else "default"
+    t_mm = user_t_mm or note_t or cfg_t_mm
+    h_mm = user_h_mm or note_h or cfg_h_mm
     t = t_mm * unit
     segs = list(_segments(a, rid))
     if not segs:
@@ -250,4 +259,5 @@ def analyse_roof(a, rid: int, cfg_t_mm: float, cfg_h_mm: float | None) -> RoofRe
             if all(math.dist(tx["p"], o["p"]) > 1000 * unit for _, o in khurras):
                 khurras.append((i, tx))
 
-    return RoofResult(rid, g, roofed, level_of, levels, strips, t_mm, h_mm, note, khurras, tanks, skipped, notes=extra_notes)
+    return RoofResult(rid, g, roofed, level_of, levels, strips, t_mm, h_mm, note, khurras, tanks, skipped, notes=extra_notes,
+                      parapet_h_source=h_src, parapet_t_source=t_src)

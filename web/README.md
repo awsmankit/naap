@@ -23,7 +23,7 @@ Local-only routes: `GET .../project` (a `.naap.json` download) and project impor
 
 ## API used
 `GET /api/meta`, `POST /api/jobs`, `GET /api/jobs[/{id}]`, `GET .../geometry`, `GET|PUT .../config`,
-`POST .../check`, `POST .../build`, `GET .../mb`, `GET .../mb.xlsx`, `GET /openapi.json` (to detect `/mb`).
+`POST .../check`, `POST .../review`, `POST .../build`, `GET .../mb`, `GET .../mb.xlsx`, `GET /openapi.json` (to detect `/mb`).
 
 `GET /api/jobs/{id}/mb` → `{rows, abstract, rooms, openings, dimensions, flags, meta}` where
 `rows[] = {id, sno, trade, item, desc?, location, nos, l, b, h, qty, unit, remarks, status, refs, flag_ids}`,
@@ -38,3 +38,13 @@ falls back to the `/build` response (no row-level book). Row `id`s should be sta
 (`{"<sheet>": {p1, p2, mm} | {scale} | {pt_per_mm} | null}`, rebuilds), `GET .../sheet/{n}.png?dpi=&clip=x0,y0,x1,y1`
 (page points, y down). The UI adds a sheet strip, a raster backdrop toggle, a two-point calibration tool and the
 Steel / Schedules / Calibration tabs (`js/struct.js`). Keys: `[` `]` previous/next sheet.
+
+## Review step
+`POST /api/jobs/{id}/review` (body: the config, or none for the saved one) returns `meta.review` of an engine run
+(`engine/review.py`; `engine_struct/build.py:struct_review` for PDFs), reusing the cached run when the config is unchanged:
+`views[]` (`purpose`: measured | heights | finishes | sizes | legend | unused, `reason`, `warn`, `overlaps`), `plans[]`
+(floors, multiplier, storey height and the flag ids that confirm them), `building.text`, `heights` (rows per block /
+storey / roof level with value, source and `assumed`; wall types; slab, beam depth, lintel) and `questions[]`.
+`js/review.js` writes answers where the engine reads them: `config.flags[id]` (as on the Flags tab) plus the region's
+`floors`, `multiplier`, `floor_to_floor_mm` (`*_source: "user (Review)"`). A non-plan view ticked on Review gets
+`measure: true` and is measured as a plan (the UI warns that it double-counts).

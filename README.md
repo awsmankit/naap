@@ -160,7 +160,9 @@ One room label is wrong on purpose.
    dimensions and multilines are exploded. PDFs are read through a pluggable backend (PyMuPDF by
    default).
 2. **Views and roles.** Entities are grouped into views (plans, sections, elevations and schedules)
-   and named from their titles. Layer roles (brick or AAC wall, parapet, column, door, window, room
+   and named from their titles. Review shows what each view is used for (measured, heights, finishes, sizes or not
+   used, with the reason), the floors and multiplier of each plan, the wall heights per block with their source,
+   and the questions the engine would ask before an accurate book. Layer roles (brick or AAC wall, parapet, column, door, window, room
    text, dimension and so on) are guessed from the layer names. You confirm the views and roles in
    Review.
 3. **Measure.** Plans are rasterised. Masonry comes from the wall hatches named in the legend and from

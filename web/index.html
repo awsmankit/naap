@@ -134,6 +134,7 @@
           <h2>Check what gets measured</h2>
           <p class="muted" id="rvIntro">Include the views to measure, confirm layer roles and heights, then build the book.</p>
         </div>
+        <section class="ask" id="rvAsk" aria-label="Before you build"></section>
         <div class="tabs" role="tablist" id="rvTabs">
           <button role="tab" aria-selected="true" data-tab="views">Views <span class="n" id="nViews"></span></button>
           <button role="tab" aria-selected="false" data-tab="layers">Layers <span class="n" id="nLayers"></span></button>
@@ -147,7 +148,8 @@
       </aside>
 
       <!-- MB ledger -->
-      <aside class="panel ledger" id="ledger" hidden aria-label="Measurement book">
+      <aside class="panel ledger" id="ledger" hidden aria-labelledby="ledgerTitle">
+        <h2 class="sr-only" id="ledgerTitle">Measurement book</h2>
         <div class="tabs" role="tablist" id="mbTabs"></div>
         <div class="filters" id="filters">
           <input type="search" id="q" placeholder="Search items, rooms, tags  ( / )" aria-label="Search">

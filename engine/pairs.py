@@ -119,19 +119,34 @@ def _merge(strips: list[Strip]) -> list[Strip]:
 
 def join_corners(strips: list[Strip]) -> None:
     """Extend strip ends to the centre line of a perpendicular strip they meet
-    (L corners and T junctions), so centre-line lengths are measured corner to corner."""
+    (L corners and T junctions), so centre-line lengths are measured corner to corner.
+
+    Only perpendicular strips whose centre line lies near an end can move it, so they are looked up
+    by centre line (sorted, bisect) instead of testing every pair; they are visited in list order as
+    before, and the window grows if an end moves, so the result is the same as the all-pairs loop."""
+    from bisect import bisect_left, bisect_right
+    by_c = {h: sorted((o.c, k) for k, o in enumerate(strips) if o.horizontal == h) for h in (True, False)}
+    cs = {h: [c for c, _ in v] for h, v in by_c.items()}
+    R = max((o.t for o in strips), default=0.0)
     for s in strips:
-        for o in strips:
-            if o.horizontal == s.horizontal:
-                continue
-            reach = max(s.t, o.t)
-            # o crosses s's centre line within its (slightly extended) extent?
-            if not (o.lo - reach <= s.c <= o.hi + reach):
-                continue
-            if abs(o.c - s.lo) <= reach and o.c < s.lo:
-                s.lo = o.c
-            elif abs(o.c - s.hi) <= reach and o.c > s.hi:
-                s.hi = o.c
+        others, oc = by_c[not s.horizontal], cs[not s.horizontal]
+        lo0, hi0 = s.lo, s.hi
+        wlo, whi = lo0 - R, hi0 + R
+        while True:
+            s.lo, s.hi = lo0, hi0
+            for k in sorted(k for _, k in others[bisect_left(oc, wlo):bisect_right(oc, whi)]):
+                o = strips[k]
+                reach = max(s.t, o.t)
+                # o crosses s's centre line within its (slightly extended) extent?
+                if not (o.lo - reach <= s.c <= o.hi + reach):
+                    continue
+                if abs(o.c - s.lo) <= reach and o.c < s.lo:
+                    s.lo = o.c
+                elif abs(o.c - s.hi) <= reach and o.c > s.hi:
+                    s.hi = o.c
+            if s.lo - R >= wlo and s.hi + R <= whi:
+                break
+            wlo, whi = min(wlo, s.lo - R), max(whi, s.hi + R)
 
 
 def strips_from_segments(items, tmin, tmax, tol, min_len) -> tuple[list[Strip], int]:

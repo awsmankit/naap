@@ -192,3 +192,26 @@ def test_mock_rows_match_the_engine():
     now = result_json(build_mb(geo, cfg))
     assert [r["id"] for r in mb["rows"]] == [r["id"] for r in now["rows"]]
     assert [round(a["qty"], 3) for a in mb["abstract"]] == [round(a["qty"], 3) for a in now["abstract"]]
+
+
+def test_header_units_that_lie_are_shown_as_used(tmp_path, monkeypatch):
+    """A drawing in mm whose $INSUNITS says inches: the engine measures in mm, but the viewer's header,
+    scale bar and coordinates said 'in' (a 20,000 in scale bar on a plan measured in mm)."""
+    import ezdxf
+    from fastapi.testclient import TestClient
+
+    from app import jobs
+    from app import main as appmain
+    from tests.test_api_pdf import _wait
+    doc = ezdxf.readfile(SAMPLE)
+    doc.header["$INSUNITS"] = 1
+    doc.saveas(tmp_path / "inches.dxf")
+    monkeypatch.setattr(jobs, "DATA_DIR", tmp_path / "jobs")
+    (tmp_path / "jobs").mkdir()
+    client = TestClient(appmain.app)
+    jid = client.post("/api/jobs", files={"file": ("inches.dxf", (tmp_path / "inches.dxf").read_bytes(), "application/dxf")}).json()["id"]
+    st = _wait(client, jid)
+    assert st["stats"]["units"] == "mm (header says in)"
+    geo = client.get(f"/api/jobs/{jid}/geometry").json()
+    assert geo["units"] == "in" and geo["display_units"] == "mm"
+    assert client.get("/js/review.js").headers["cache-control"] == "no-cache"   # no stale modules after an update
