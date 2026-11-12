@@ -56,16 +56,17 @@ PYPI_WHEELS = {
                    "7a91720bc756843502c3b7504c77b8fe44217c85c537d85037f0f536151b2caa", [], ["et_xmlfile"]),
 }
 # Packages from Pyodide's own repository (hashes come from its pinned pyodide-lock.json).
-PYODIDE_PACKAGES = ["numpy", "scipy", "pyparsing", "typing-extensions", "fonttools", "pymupdf"]
+PYODIDE_PACKAGES = ["numpy", "scipy", "pyparsing", "typing-extensions", "fonttools", "pymupdf", "pillow"]
 BASE_PACKAGES = ["numpy", "scipy", "pyparsing", "typing-extensions", "fonttools", "ezdxf", "openpyxl", "et-xmlfile"]
 PDF_PACKAGES = ["pymupdf"]          # loaded the first time a PDF is opened
+CONVERT_PACKAGES = ["pillow"]       # ezdxf's drawing add-on (DXF to PDF) imports it; loaded on the first conversion
 # The engine uses scipy.ndimage and scipy.spatial only; these subpackages are never imported.
 SCIPY_DROP = ["misc", "stats", "optimize", "interpolate", "io", "signal", "integrate", "cluster", "fft",
               "odr", "fftpack", "datasets"]
 PYODIDE_CORE = ["pyodide.mjs", "pyodide.asm.js", "pyodide.asm.wasm", "python_stdlib.zip"]
 
 WEB_SKIP = {"dev_server.py", "README.md", "build_mock.py"}
-PY_PACKAGES = ["app", "engine", "engine_struct"]
+PY_PACKAGES = ["app", "engine", "engine_struct", "convert"]
 PY_SKIP = {"app/main.py", "app/__main__.py"}    # the FastAPI server is not needed in the browser
 
 
@@ -200,7 +201,7 @@ def vendor(out: Path, cache: Path) -> dict:
     def size(names):
         return sum((pdir / packages[n]["file_name"]).stat().st_size for n in names)
     core = sum((pdir / n).stat().st_size for n in PYODIDE_CORE)
-    return {"core": core, "base": size(BASE_PACKAGES), "pdf": size(PDF_PACKAGES),
+    return {"core": core, "base": size(BASE_PACKAGES), "pdf": size(PDF_PACKAGES), "convert": size(CONVERT_PACKAGES),
             "libredwg": sum(f.stat().st_size for f in ldir.iterdir()),
             "versions": {"pyodide": PYODIDE_VERSION, "libredwg-web": LIBREDWG_VERSION,
                          **{n: packages[n]["version"] for n in packages}}}
@@ -213,14 +214,16 @@ def build(out: Path, cache: Path, with_vendor: bool = True) -> dict:
         shutil.rmtree(out)
     copy_web(out)
     zpath = python_zip(out)
-    sizes = vendor(out, cache) if with_vendor else {"core": 0, "base": 0, "pdf": 0, "libredwg": 0, "versions": {}}
+    sizes = vendor(out, cache) if with_vendor else {"core": 0, "base": 0, "pdf": 0, "convert": 0, "libredwg": 0, "versions": {}}
     manifest = {
         "pyodide": {"dir": "vendor/pyodide/", "version": PYODIDE_VERSION},
         "packages": BASE_PACKAGES,
         "pdf_packages": PDF_PACKAGES,
+        "convert_packages": CONVERT_PACKAGES,
         "naap_zip": "py/naap.zip",
         "runtime_bytes": sizes["core"] + sizes["base"] + zpath.stat().st_size,
         "pdf_bytes": sizes["pdf"],
+        "convert_bytes": sizes["convert"],
         "vendored": with_vendor,
         "versions": sizes["versions"],
         "meta": {**service.meta(), "runtime": "browser"},

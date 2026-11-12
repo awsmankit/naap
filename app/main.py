@@ -5,6 +5,7 @@ shares."""
 from __future__ import annotations
 
 import re
+import shutil
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Request, UploadFile
@@ -14,7 +15,7 @@ from fastapi.staticfiles import StaticFiles
 from starlette.concurrency import run_in_threadpool
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from . import jobs, service
+from . import convert_api, jobs, service
 from .service import MAX_PDF_MB, MAX_UPLOAD_MB, ServiceError
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -192,6 +193,60 @@ def download(job_id: str):
     f, name = service.workbook(service.ready(job_id))
     return FileResponse(f, filename=name,
                         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+
+
+# ---------------------------------------------------------------- drawing conversion (PDF <-> DXF), one shot
+
+async def _convert(kind: str, request: Request, file: UploadFile, out_ext: str):
+    ext = convert_api.check_name(kind, file.filename)
+    max_mb = convert_api.limit_mb(ext)
+    limit = max_mb * 1024 * 1024
+    clen = request.headers.get("content-length")
+    if clen and clen.isdigit() and int(clen) > limit + 1024 * 1024:
+        raise HTTPException(413, f"File larger than {max_mb} MB")
+    form = await request.form()
+    opts = {k: v for k, v in form.items() if isinstance(v, str)}
+    cid, d = await run_in_threadpool(convert_api.new_dir)
+    try:
+        src, size = d / f"input{ext}", 0   # never use the client-supplied name on disk
+        with src.open("wb") as fh:
+            while chunk := await file.read(1024 * 1024):
+                size += len(chunk)
+                if size > limit:
+                    raise HTTPException(413, f"File larger than {max_mb} MB")
+                fh.write(chunk)
+        convert_api.check_upload(src, ext)
+        out = d / f"out.{out_ext}"
+        res = await run_in_threadpool(convert_api.run, kind, src, out, opts)
+        (d / "name.txt").write_text(convert_api.safe_stem(file.filename))
+    except BaseException:
+        shutil.rmtree(d, ignore_errors=True)
+        raise
+    src.unlink(missing_ok=True)             # the output is kept for a short while, the upload is not
+    url = f"/api/convert/{cid}/out.{out_ext}"
+    name = convert_api.safe_stem(file.filename) + "." + out_ext
+    return {**res, "id": cid, "filename": name, "download": url, f"{out_ext}_url": url,
+            "note": convert_api.DWG_OUT_NOTE if out_ext == "dxf" else None}
+
+
+@app.post("/api/convert/pdf-to-dxf")
+async def convert_pdf_to_dxf(request: Request, file: UploadFile):
+    """Vector PDF to DXF. Form: page, scale (auto | 1:N | none), calib ("x1,y1,x2,y2,mm"), tolerance, layers, sheets."""
+    if str((await request.form()).get("format", "dxf")).lower() == "dwg":
+        raise HTTPException(422, convert_api.DWG_OUT_ERROR)
+    return await _convert("pdf2dxf", request, file, "dxf")
+
+
+@app.post("/api/convert/to-pdf")
+async def convert_to_pdf(request: Request, file: UploadFile):
+    """DXF or DWG to PDF. Form: paper (A0..A4), orientation, mono, layouts, hide_layers."""
+    return await _convert("dxf2pdf", request, file, "pdf")
+
+
+@app.get("/api/convert/{cid}/out.{ext}")
+def convert_download(cid: str, ext: str):
+    f, name = convert_api.output(cid, ext)
+    return FileResponse(f, filename=name, media_type="application/dxf" if ext == "dxf" else "application/pdf")
 
 
 SAMPLES = ROOT / "samples"

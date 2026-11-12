@@ -192,6 +192,52 @@ export function uploadJob(fileOrFiles, onProgress = () => {}) {
   });
 }
 
+/**
+ * One-shot conversion: kind "pdf2dxf" (a PDF in, DXF out) or "dxf2pdf" (DXF or DWG in, PDF out).
+ * options are the form fields of POST /api/convert/pdf-to-dxf or /to-pdf (page, scale, calib, tolerance;
+ * paper, orientation, mono, layouts). Resolves {report, summary, filename, note, ...}; pass the result to
+ * downloadConverted(). Local mode runs it in the worker (DXF in; a DWG is read with LibreDWG first).
+ */
+export function convertFile(kind, file, options = {}, onProgress = () => {}) {
+  const outExt = kind === "pdf2dxf" ? "dxf" : "pdf";
+  const stem = file.name.replace(/\.[^.]+$/, "").replace(/[^\w.-]+/g, "_").slice(0, 80) || "drawing";
+  if (engine) {
+    return (async () => {
+      engine.onProgress = onProgress;
+      try {
+        const buf = await file.arrayBuffer();
+        const r = await engine.send({ type: "convert", kind, name: file.name, buf, options }, [buf]);
+        if (r.status >= 400) throw new ApiError(r.body?.detail || `Error ${r.status}`, r.status);
+        const blob = new Blob([r.file.buf], { type: r.file.type });
+        return { ...r.body, filename: `${stem}.${outExt}`, blob };
+      } finally { engine.onProgress = null; }
+    })();
+  }
+  return new Promise((resolve, reject) => {
+    const fd = new FormData();
+    fd.append("file", file);
+    for (const [k, v] of Object.entries(options)) if (v !== undefined && v !== null && v !== "") fd.append(k, String(v));
+    const xhr = new XMLHttpRequest();
+    xhr.open("POST", kind === "pdf2dxf" ? "/api/convert/pdf-to-dxf" : "/api/convert/to-pdf");
+    xhr.upload.onprogress = (e) => { if (e.lengthComputable) onProgress({ msg: e.loaded < e.total ? `Uploading ${Math.round((e.loaded / e.total) * 100)}%` : "Converting…", pct: Math.round((e.loaded / e.total) * 100) }); };
+    xhr.onerror = () => reject(new ApiError("The conversion failed: the app server did not answer. Check it is running on port 8777.", 0));
+    xhr.onload = () => {
+      let body = {};
+      try { body = JSON.parse(xhr.responseText); } catch { /* ignore */ }
+      if (xhr.status >= 400) reject(new ApiError(typeof body.detail === "string" ? body.detail : `Conversion failed (${xhr.status}).`, xhr.status));
+      else resolve(body);
+    };
+    xhr.send(fd);
+  });
+}
+
+/** Save a convertFile() result: a Blob (local) or the server's download URL. */
+export function downloadConverted(res) {
+  if (res.blob) { saveBlob(res.blob, res.filename); return; }
+  const a = Object.assign(document.createElement("a"), { href: res.download, download: res.filename || "" });
+  document.body.append(a); a.click(); a.remove();
+}
+
 /** The public sample drawing (samples/sample-house.dxf) as a File. */
 export async function sampleFile(name = "sample-house.dxf") {
   let r;

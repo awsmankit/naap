@@ -120,6 +120,21 @@ def _accept_input(job_id: str) -> dict:
     return jobs.update_state(d, status="queued", message="Queued", size=size)
 
 
+def convert(kind: str, src: str, out: str, opts_json: str | None = None) -> str:
+    """One conversion (PDF to DXF, DXF to PDF) of a file the worker wrote; DWG was turned into DXF by the
+    worker already. Answers {"status", "body": {"report", "summary", ...}}."""
+    def run():
+        from . import convert_api   # needs Pillow, which the worker loads before the first conversion
+        path = Path(src)
+        ext = path.suffix.lower()
+        if ext not in (".pdf", ".dxf"):
+            raise ServiceError(400, "Only .pdf and .dxf files can be converted here")
+        convert_api.check_upload(path, ext)
+        res = convert_api.run(kind, path, Path(out), json.loads(opts_json) if opts_json else {})
+        return {**res, "note": convert_api.DWG_OUT_NOTE if kind == "pdf2dxf" else None}
+    return _envelope(run)
+
+
 def set_state(job_id: str, fields_json: str) -> str:
     return json.dumps(jobs.update_state(service.job_path(job_id), **json.loads(fields_json)))
 

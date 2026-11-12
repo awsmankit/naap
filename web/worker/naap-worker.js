@@ -6,7 +6,8 @@
 // IndexedDB and moves bytes in and out. Nothing is sent over the network: the only fetches are
 // the site's own runtime files.
 //
-// Messages in:  {type: "call", id, method, url, body} | {type: "upload", id, files: [{name, size, buf}, ...]} (several only for a PDF set)
+// Messages in:  {type: "convert", id, kind: "pdf2dxf"|"dxf2pdf", name, buf, options} (one-shot PDF <-> DXF, no job)
+//               {type: "call", id, method, url, body} | {type: "upload", id, files: [{name, size, buf}, ...]} (several only for a PDF set)
 //               {type: "import", id, buf} | {type: "warmup"}
 // Messages out: {type: "reply", id, status, body} | {type: "reply", id, status, file: {buf, type, filename}}
 //               {type: "state", state} (job stage changes) | {type: "progress", phase, msg, loaded, total}
@@ -26,7 +27,7 @@ function savedNames(d) {
 }
 
 let manifest = null;
-let py = null, naap = null, booting = null, pdfReady = null;
+let py = null, naap = null, booting = null, pdfReady = null, convertReady = null;
 let active = null;                         // the job whose files are in memory
 const saved = new Map();                   // path -> mtime (ms) last written to IndexedDB
 
@@ -170,6 +171,19 @@ function pdfSupport() {
   })();
   pdfReady.catch(() => { pdfReady = null; });
   return pdfReady;
+}
+
+/** Pillow (needed by the DXF to PDF drawing code) is loaded with the PDF reader the first time something is converted. */
+function convertSupport() {
+  convertReady ??= (async () => {
+    await pdfSupport();
+    const m = await loadManifest();
+    counting = counter("runtime", "Loading the conversion tools", m.convert_bytes || 1);
+    progress("runtime", "Loading the conversion tools…", 0, m.convert_bytes || 1);
+    try { await loadPackages(m.convert_packages || ["pillow"]); } finally { counting = null; }
+  })();
+  convertReady.catch(() => { convertReady = null; });
+  return convertReady;
 }
 
 function fatal(err) {
@@ -322,18 +336,49 @@ async function upload({ files }) {
   return { id, state: st, ext };
 }
 
+/** DWG bytes -> {ok, buf (DXF)} | {ok: false, error}, in a short-lived LibreDWG (WebAssembly) worker. */
+function dwgToDxf(buf) {
+  return new Promise((resolve) => {
+    const w = new Worker(new URL("dwg-worker.js", import.meta.url), { type: "module" });
+    w.onmessage = (e) => { resolve(e.data); w.terminate(); };
+    w.onerror = (e) => { resolve({ ok: false, error: e.message || "the DWG converter failed to start" }); w.terminate(); };
+    w.postMessage({ buf }, [buf]);
+  });
+}
+
+/** One-shot conversion, no job: PDF -> DXF, or DXF/DWG -> PDF (a DWG is read by LibreDWG first, as for a job). */
+const CONV = "/conv";
+async function convertFile({ kind, name, buf, options }) {
+  await boot();
+  await convertSupport();
+  let ext = name.toLowerCase().split(".").pop();
+  let bytes = new Uint8Array(buf);
+  if (kind === "dxf2pdf" && ext === "dwg") {
+    const r = await dwgToDxf(bytes.buffer);
+    if (!r.ok) throw new HttpError(422, `DWG conversion failed: ${r.error}`.slice(0, 400));
+    bytes = new Uint8Array(r.buf);
+    ext = "dxf";
+  }
+  if (!exists(CONV)) FS().mkdir(CONV);
+  const src = `${CONV}/in.${ext}`, out = `${CONV}/out.${kind === "pdf2dxf" ? "dxf" : "pdf"}`;
+  FS().writeFile(src, bytes);
+  bytes = null;
+  try {
+    const body = unwrap(naap.convert(kind, src, out, JSON.stringify(options || {})));
+    const data = FS().readFile(out);
+    return { body, file: { buf: data.buffer, type: kind === "pdf2dxf" ? "application/dxf" : "application/pdf" } };
+  } finally {
+    for (const p of [src, out]) if (exists(p)) FS().unlink(p);
+  }
+}
+
 async function convertDwg(id) {
   const d = `${JOBS}/${id}`;
   naap.set_state(id, JSON.stringify({ status: "converting", message: "Converting DWG to DXF with LibreDWG (WebAssembly, in this browser)…" }));
   const t0 = performance.now();
   const dwg = FS().readFile(`${d}/input.dwg`);
   FS().unlink(`${d}/input.dwg`);
-  const res = await new Promise((resolve) => {
-    const w = new Worker(new URL("dwg-worker.js", import.meta.url), { type: "module" });
-    w.onmessage = (e) => { resolve(e.data); w.terminate(); };
-    w.onerror = (e) => { resolve({ ok: false, error: e.message || "the DWG converter failed to start" }); w.terminate(); };
-    w.postMessage({ buf: dwg.buffer }, [dwg.buffer]);
-  });
+  const res = await dwgToDxf(dwg.buffer);
   if (!res.ok) return { error: res.error };
   FS().writeFile(`${d}/input.dxf`, new Uint8Array(res.buf));
   return { seconds: (performance.now() - t0) / 1000 };
@@ -370,6 +415,7 @@ const enqueue = (fn) => { const p = queue.then(fn); queue = p.catch(() => {}); r
 function replyError(id, e) {
   if (e instanceof HttpError) { post({ type: "reply", id, status: e.status, body: { detail: e.message } }); return; }
   const msg = String(e?.message || e);
+  console.warn(msg);
   post({ type: "reply", id, status: 500, body: { detail: msg.split("\n").filter(Boolean).slice(-1)[0] || msg } });
   if (OOM.test(msg)) fatal(e);
 }
@@ -396,6 +442,10 @@ self.onmessage = (e) => {
         if (OOM.test(msg)) fatal(err);
       });
     }, (err) => replyError(m.id, err));
+    return;
+  }
+  if (m.type === "convert") {
+    enqueue(() => convertFile(m)).then((r) => post({ type: "reply", id: m.id, status: 200, body: r.body, file: r.file }, [r.file.buf]), (err) => replyError(m.id, err));
     return;
   }
   if (m.type === "import") {

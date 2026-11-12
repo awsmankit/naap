@@ -77,6 +77,7 @@
     </div>
 
     <div class="upload-side">
+      <p class="muted small conv-entry" id="convEntry">Only need a file converted? <button class="link" type="button" id="btnConvert">Convert PDF to DXF, or DXF/DWG to PDF</button></p>
       <ol class="stages" id="stages" aria-label="Conversion progress" hidden></ol>
       <p class="err" id="upErr" role="alert" hidden></p>
       <div class="quick-up" id="quickUp" hidden>
@@ -97,6 +98,86 @@
       <p class="muted small" id="projectOpen" hidden>Carry on from a saved project: <a href="#" id="btnOpenProject">Open a .naap.json file</a>. Jobs also stay in this browser until you clear its site data.
         <input type="file" id="projectInput" accept=".json,application/json" hidden></p>
       <p class="muted small" id="mockHint">No drawing to hand? <a href="#" id="btnSample">Process the sample house</a> (<code>samples/sample-house.dxf</code>, a made-up 2BHK) or <a href="?mock=1">preview its book offline</a>.</p>
+    </div>
+  </section>
+
+  <!-- ============================== CONVERT (PDF <-> DXF, no measurement book) ============================== -->
+  <section class="view view-convert" id="view-convert" aria-labelledby="cvTitle" hidden>
+    <div class="cv-card">
+      <button class="link cv-back" type="button" id="cvBack">&larr; Back to upload</button>
+      <h1 id="cvTitle">Convert a drawing</h1>
+      <p class="muted" id="cvIntro">Change the file format only: no measurement book is made. <span id="cvPrivacy"></span></p>
+      <div class="tabs" role="tablist" aria-label="Conversion" id="cvTabs">
+        <button type="button" role="tab" id="cvTab-pdf2dxf" data-kind="pdf2dxf" aria-selected="true" aria-controls="cvPane">PDF &rarr; DXF</button>
+        <button type="button" role="tab" id="cvTab-dxf2pdf" data-kind="dxf2pdf" aria-selected="false" aria-controls="cvPane" tabindex="-1">DXF/DWG &rarr; PDF</button>
+      </div>
+      <div id="cvPane" role="tabpanel" aria-labelledby="cvTab-pdf2dxf">
+      <form class="cv-form" id="cvForm" novalidate>
+        <div class="cv-file">
+          <label class="btn" for="cvFile" id="cvPick">Choose a file</label>
+          <input type="file" id="cvFile" accept=".pdf" class="sr-only">
+          <span class="cv-name" id="cvName">No file chosen</span>
+        </div>
+        <p class="muted small" id="cvKindNote"></p>
+
+        <div class="cv-opts" id="cvOptsPdf2dxf">
+          <div class="cv-row">
+            <label for="cvPages">Pages</label>
+            <select id="cvPages"><option value="all">All pages (side by side)</option><option value="one">One page</option></select>
+            <input type="number" id="cvPage" min="1" step="1" value="1" inputmode="numeric" aria-label="Page number" hidden>
+          </div>
+          <div class="cv-row">
+            <label for="cvScale">Scale</label>
+            <select id="cvScale">
+              <option value="auto">Auto (read it from the title block)</option>
+              <option value="n">1 : N (I know the scale)</option>
+              <option value="cal">Calibrate with two known points</option>
+            </select>
+            <span class="cv-n" id="cvScaleN" hidden>1 : <input type="number" id="cvN" min="1" step="any" value="100" inputmode="decimal" aria-label="Scale denominator N"></span>
+          </div>
+          <fieldset class="cv-cal" id="cvCal" hidden>
+            <legend>Two points on the page and the real distance between them</legend>
+            <p class="muted small">Give each point in PDF points measured from the page's top-left corner (the same units a PDF viewer shows). The DXF is then scaled so the distance matches.</p>
+            <div class="cv-grid">
+              <label>Point 1 x<input type="number" id="cvX1" step="any" inputmode="decimal"></label>
+              <label>Point 1 y<input type="number" id="cvY1" step="any" inputmode="decimal"></label>
+              <label>Point 2 x<input type="number" id="cvX2" step="any" inputmode="decimal"></label>
+              <label>Point 2 y<input type="number" id="cvY2" step="any" inputmode="decimal"></label>
+              <label class="cv-wide">Real distance (mm)<input type="number" id="cvMm" min="0" step="any" inputmode="decimal"></label>
+            </div>
+          </fieldset>
+          <div class="cv-row">
+            <label for="cvTol">Curve tolerance (mm)</label>
+            <input type="number" id="cvTol" min="0.01" max="10" step="0.01" value="0.2" inputmode="decimal" aria-describedby="cvTolHelp">
+            <span class="muted small" id="cvTolHelp">Smaller is smoother but makes a bigger file.</span>
+          </div>
+        </div>
+
+        <div class="cv-opts" id="cvOptsDxf2pdf" hidden>
+          <div class="cv-row"><label for="cvPaper">Paper size</label>
+            <select id="cvPaper"><option>A4</option><option selected>A3</option><option>A2</option><option>A1</option><option>A0</option></select></div>
+          <div class="cv-row"><label for="cvOrient">Orientation</label>
+            <select id="cvOrient"><option value="auto">Automatic (best fit)</option><option value="landscape">Landscape</option><option value="portrait">Portrait</option></select></div>
+          <div class="cv-row"><label for="cvColour">Colour</label>
+            <select id="cvColour"><option value="colour">Colour (as in the drawing)</option><option value="mono">Black and white</option></select></div>
+          <div class="cv-row"><label for="cvLayout">Layout</label>
+            <select id="cvLayout"><option value="model">Model space (the drawing itself)</option><option value="paper">Paper-space layouts (one page each)</option><option value="all">Model space and all layouts</option></select></div>
+        </div>
+
+        <div class="cv-act"><button class="btn primary" type="submit" id="cvGo" disabled>Convert</button></div>
+      </form>
+      </div>
+
+      <div class="cv-prog" id="cvProg" role="status" aria-live="polite" hidden>
+        <span id="cvProgMsg">Converting…</span><span class="pbar busy" aria-hidden="true"><i></i></span>
+      </div>
+      <p class="err" id="cvErr" role="alert" hidden></p>
+      <section class="cv-result" id="cvResult" aria-labelledby="cvResH" hidden>
+        <h2 id="cvResH">Converted</h2>
+        <ul class="cv-sum" id="cvSum"></ul>
+        <p class="cv-dwg" id="cvDwg" hidden><b>Output is DXF; open it in AutoCAD and Save As DWG.</b></p>
+        <button class="btn primary" type="button" id="cvDownload">Download</button>
+      </section>
     </div>
   </section>
 

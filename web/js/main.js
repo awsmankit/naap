@@ -12,6 +12,7 @@ import { renderReview, loadReview, blocked } from "./review.js";
 import { structGroups, sheetName } from "./struct.js";
 import { assess, markReading, clearReading, lastReading, OOM_RE, device } from "./guard.js";
 import { registerSW } from "./pwa.js";
+import { initConvert, closeConvert } from "./convert.js";
 
 const STEP_ORDER = ["upload", "review", "mb"];
 const SIGNAL = "#e9c46a";
@@ -29,6 +30,7 @@ function setStep(step, { nav = true } = {}) {
   const prev = S.step;
   S.step = step;
   if (!S.compact || (prev && prev !== step)) closeFs({ silent: true });
+  closeConvert();
   $("#view-upload").hidden = step !== "upload";
   $("#view-work").hidden = step === "upload";
   $("#reviewPanel").hidden = step !== "review";
@@ -243,7 +245,7 @@ function upNote(msg) {
 
 // ---------------------------------------------------------------- device guard dialog
 /** Resolves "continue" | "laptop" | "project" | "cancel". Focus stays in the dialog until it closes. */
-function guardDialog(file, a) {
+function guardDialog(file, a, { project = true } = {}) {
   const dlg = $("#guard"), back = document.activeElement;
   const gb = (v) => `${fmt(v, 1, 1)} GB`;
   const what = a.mobile ? (a.ios ? "an iPhone or iPad" : "a phone or tablet") : "this computer";
@@ -259,7 +261,7 @@ function guardDialog(file, a) {
     const done = (v) => { dlg.hidden = true; dlg.removeEventListener("keydown", keys); back?.focus?.({ preventScroll: true }); resolve(v); };
     const acts = [
       el("button", { class: "btn primary", type: "button", onclick: () => done("laptop") }, "Use a laptop"),
-      CAN_PROJECTS ? el("button", { class: "btn", type: "button", onclick: () => done("project") }, "Open a saved project (.naap.json) instead") : null,
+      CAN_PROJECTS && project ? el("button", { class: "btn", type: "button", onclick: () => done("project") }, "Open a saved project (.naap.json) instead") : null,
       el("button", { class: "btn", type: "button", onclick: () => done("continue") }, "Continue anyway"),
     ].filter(Boolean);
     $("#guardActions").replaceChildren(...acts);
@@ -274,6 +276,14 @@ function guardDialog(file, a) {
     acts[0].focus();
   });
 }
+
+initConvert({
+  // big files in the browser: the same device-memory check as an upload; true = go on
+  async guard(file) {
+    const a = assess({ name: file.name, size: file.size });
+    return !a.risky || (await guardDialog(file, a, { project: false })) === "continue";
+  },
+});
 
 async function pollJob(id, t0 = Date.now()) {
   S.jobId = id;
