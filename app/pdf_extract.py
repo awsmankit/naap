@@ -203,6 +203,8 @@ def merge_spans(spans: list) -> list:
     out = []
     for sp in sorted(spans, key=lambda s: s.seq):
         sp = replace(sp, text=fix_text(sp.text))
+        if sp.parts:
+            sp = replace(sp, parts=tuple((fix_text(t), b) for t, b in sp.parts))
         if out:
             pr = out[-1]
             dx, dy = sp.dir
@@ -219,7 +221,8 @@ def merge_spans(spans: list) -> list:
                     bb = (min(pr.bbox[0], sp.bbox[0]), min(pr.bbox[1], sp.bbox[1]),
                           max(pr.bbox[2], sp.bbox[2]), max(pr.bbox[3], sp.bbox[3]))
                     sep = " " if gap > 0.25 * sp.size and not pr.text.endswith(" ") and not sp.text.startswith(" ") else ""
-                    out[-1] = replace(pr, text=pr.text + sep + sp.text, bbox=bb)
+                    parts = (pr.parts or ((pr.text, pr.bbox),)) + ((sp.text, sp.bbox),)
+                    out[-1] = replace(pr, text=pr.text + sep + sp.text, bbox=bb, parts=parts)
                     continue
         out.append(sp)
     return out
@@ -374,8 +377,11 @@ def _extract(doc, max_entities: int, pages: list[int] | None) -> dict:
                 a, b = X((x0, y1)), X((x1, y0))
                 ang = math.degrees(math.atan2(-sp.dir[1], sp.dir[0]))
                 h = (y1 - y0) if abs(sp.dir[0]) >= abs(sp.dir[1]) else (x1 - x0)
-                add({"t": "T", "p": list(X(sp.origin)), "s": s, "h": _r(h * 0.75), "f": _r(sp.size),
-                     "r": round(ang, 1), "bb": [a[0], a[1], b[0], b[1]]}, sp.layer, 1_000_000 + sp.seq)
+                rec = {"t": "T", "p": list(X(sp.origin)), "s": s, "h": _r(h * 0.75), "f": _r(sp.size),
+                       "r": round(ang, 1), "bb": [a[0], a[1], b[0], b[1]]}
+                if len(sp.parts) > 1:      # the original spans, so table cells glued by the merge can be split again
+                    rec["parts"] = [[t.strip(), *X((bx[0], bx[3])), *X((bx[2], bx[1]))] for t, bx in sp.parts if t.strip()]
+                add(rec, sp.layer, 1_000_000 + sp.seq)
         else:
             scanned_pages.append(pn)
         n_text = sum(1 for e in ents[n0:] if e["t"] == "T")
@@ -433,6 +439,97 @@ def _extract(doc, max_entities: int, pages: list[int] | None) -> dict:
         "scanned_pages": scanned_pages,
         "entities": ents,
     }
+
+
+def merge_geometries(geos: list[dict], names: list[str]) -> dict:
+    """Several extracted PDFs -> ONE geometry (one drawing set). Sheets are renumbered 1..N in file order,
+    laid side by side in the shared space, and each sheet carries "file" (name) and "file_index" and
+    "file_page" (its page in that file). Handles are renumbered with the new sheet number ("p<N>:...")."""
+    if len(geos) == 1:
+        g = geos[0]
+        for s in g["sheets"]:
+            s.setdefault("file", names[0])
+            s.setdefault("file_index", 0)
+            s.setdefault("file_page", s["sheet"])
+        return g
+    layers: list[dict] = []
+    lidx: dict[str, int] = {}
+    ents: list[dict] = []
+    sheets: list[dict] = []
+    scanned: list[int] = []
+    xoff = 0.0
+    n0 = 0
+    for fi, (g, name) in enumerate(zip(geos, names)):
+        remap = {}
+        for i, l in enumerate(g["layers"]):
+            if l["name"] not in lidx:
+                lidx[l["name"]] = len(layers)
+                layers.append({**l, "counts": dict(l.get("counts", {}))})
+            else:
+                tgt = layers[lidx[l["name"]]]
+                for k, v in (l.get("counts") or {}).items():
+                    tgt["counts"][k] = tgt["counts"].get(k, 0) + v
+                tgt["total"] = tgt.get("total", 0) + l.get("total", 0)
+                tgt["rendered"] = tgt.get("rendered", 0) + l.get("rendered", 0)
+            remap[i] = lidx[l["name"]]
+        dx = xoff - min((s["bbox"][0] for s in g["sheets"]), default=0.0)
+        new = {s["sheet"]: n0 + k + 1 for k, s in enumerate(g["sheets"])}
+        for s in g["sheets"]:
+            ns = new[s["sheet"]]
+            bb = [s["bbox"][0] + dx, s["bbox"][1], s["bbox"][2] + dx, s["bbox"][3]]
+            sheets.append({**s, "file_page": s["sheet"], "sheet": ns, "bbox": bb, "offset": [s["offset"][0] + dx, 0.0],
+                           "file": name, "file_index": fi})
+        for e in g["entities"]:
+            e = dict(e)
+            old = e["sheet"]
+            e["sheet"] = new[old]
+            e["handle"] = f"p{new[old]}:" + e["handle"].split(":", 1)[1]
+            e["l"] = remap[e["l"]]
+            for key in ("p", "c", "bb"):
+                if key in e and dx and isinstance(e[key], list):
+                    v = e[key]
+                    if key == "p" and e["t"] == "H":
+                        e[key] = [[(c + dx if j % 2 == 0 else c) for j, c in enumerate(loop)] for loop in v]
+                    else:
+                        e[key] = [(c + dx if j % 2 == 0 else c) for j, c in enumerate(v)]
+            if dx and e.get("parts"):
+                e["parts"] = [[pt[0], pt[1] + dx, pt[2], pt[3] + dx, pt[4]] for pt in e["parts"]]
+            ents.append(e)
+        scanned += [new[p] for p in g.get("scanned_pages", []) if p in new]
+        n0 += len(g["sheets"])
+        xoff = max(s["bbox"][2] for s in sheets) * 1.0 + 0.05 * max(s["size"][0] for s in g["sheets"])
+    return {"version": 1, "source": "pdf", "units": "pt", "insunits": 0,
+            "extents": [0.0, 0.0, max(s["bbox"][2] for s in sheets), max(s["size"][1] for s in sheets)],
+            "truncated": any(g.get("truncated") for g in geos), "layers": layers,
+            "layouts": [{"name": (s["title_block"] or {}).get("drawing_no") or f"Sheet {s['sheet']}", "tab": k,
+                         "sheet": s["sheet"], "titles": [], "viewports": [], "bbox": s["bbox"], "file": s["file"]}
+                        for k, s in enumerate(sheets)],
+            "sheets": sheets, "scanned_pages": scanned, "entities": ents}
+
+
+def extract_pdfs(pdf_paths: list, backend: str | None = None, max_entities: int = MAX_ENTITIES,
+                 names: list[str] | None = None) -> dict:
+    """Extract one or several PDFs as ONE drawing set (see merge_geometries). A set where every
+    file is scanned raises ScannedPDFError; scanned files in a mixed set are skipped with a note
+    in geometry["scanned_pages"] and geometry["skipped_files"]. `names` are the display names
+    (default: the file names); each sheet's file_index is the index in `pdf_paths`."""
+    paths = [Path(p) for p in pdf_paths]
+    names = list(names) if names else [p.name for p in paths]
+    geos, kept, errs = [], [], []
+    for i, p in enumerate(paths):
+        try:
+            geos.append(extract_pdf(p, backend, max_entities))
+            kept.append(i)
+        except ScannedPDFError as e:
+            errs.append(e)
+    if not geos:
+        raise errs[0]
+    geo = merge_geometries(geos, [names[i] for i in kept])
+    for s in geo["sheets"]:
+        s["file_index"] = kept[s["file_index"]]
+    if len(kept) < len(paths):
+        geo["skipped_files"] = [names[i] for i in range(len(paths)) if i not in kept]
+    return geo
 
 
 def sheet_entities(geo: dict, sheet: int) -> list[dict]:

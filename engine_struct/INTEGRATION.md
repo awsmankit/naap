@@ -113,3 +113,24 @@ Everything else (`/build`, `/mb`, `/mb.xlsx`, `/config`) is reused as-is.
   give the box. Apply `viewport = page.getViewport({rotation: page.rotate})` to every point
   so the shapes come out as described above. Rendering uses `page.render` with an
   `optionalContentConfigPromise` in which only the wanted groups are visible.
+
+
+## 5. RCC plan sets: concrete, shuttering and steel (engine_struct/rcc*.py)
+
+A set of ONE plan sheet (beam tags with `(bXD)` size labels, slab tags with "NNN MM THICK" boxes, column tags, a slab
+schedule on the plan) plus beam schedule sheets in the same or other files is detected by structure
+(`rcc.find_plan_sheet`: a slab schedule with TYPE / THICK / MAIN STEEL headings and at least 3 beam tags; sheets that
+the older engine reads, i.e. a floor-titled sheet with its own slab table, are left to it). The files are read as one
+set (`extract_pdfs`, CLI `a.pdf b.pdf c.pdf`).
+
+- `rcc_tables.py`: beam schedule (columns found from header words and cell x positions) and slab schedule. Needs
+  per-character gaps from the backend (`TextSpan.parts`), because schedules are often one text run per row.
+- `rcc_plan.py`: scale from the written beam widths against the drawn line spacing, beams as line pairs of that
+  spacing cut at columns, tags and sizes by proximity, slab panels by flood fill.
+- `rcc.py`: rows, flags, steel; configurable `cfg["formwork"]` (see `FORMWORK_DEFAULTS`) and `cfg["steel"]`
+  (`STEEL_DEFAULTS`); answers via flags `struct:notes:dev-length`, `struct:notes:cover`, `struct:notes:cover-slab`,
+  `struct:notes:grade`, `struct:columns:height:<DRG>` (also used for walls, stubs and hangers), `struct:slabs:sunken-depth`.
+- Trades: RCC (m³), SHUTTERING (m²), STEEL (kg). Every length taken off the plan is status "assumed".
+- Format-specific parts: the beam tag pattern `B<n>[A-Z]`, size pattern `(bXD)`, slab tag prefix from the schedule,
+  the words TYPE/THICK/MAIN/DISTRIBUTION/REMARK and Nos/Dia/spacing in the beam schedule header, stub/hanger/wall
+  note wording, and the layer names (`beam`, `col|wall`) with a fallback to all layers.

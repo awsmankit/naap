@@ -46,6 +46,7 @@ any external service.
   schedules, beams between columns, slab panels, notes (grade, covers, development lengths) and the
   sheet scale from written dimensions. It then gives concrete and reinforcement quantities per bar
   diameter.
+- **RCC plan sets with shuttering.** A slab-and-beam plan plus its beam schedule (several PDFs read as one set) gives RCC volumes by element, shuttering areas and steel by bar diameter. Detailing facts the sheets do not give (cover, development length, storey height) are flagged with visible defaults you can override, and every plan-scaled length is marked "assumed".
 - **Excel export.** The workbook has these sheets: MB, Abstract (plus Abstract by floor for
   multi-storey drawings), Room schedule, Door-Window schedule, All dimensions, Assumptions and Flags. Quantities and totals are Excel
   formulas.
@@ -54,7 +55,7 @@ any external service.
 
 ### In the browser (no install)
 
-Open **https://awsmankit.github.io/naap/** and drop a DWG, DXF or PDF on the page.
+Open **https://awsmankit.github.io/naap/** and drop a DWG, DXF or PDF on the page. Drop several PDFs together to read them as one drawing set (sheets are numbered across the files and show their source file).
 
 This version runs the same Python engine inside the browser, so the drawing never leaves your
 machine. How local mode works:
@@ -103,7 +104,8 @@ Settings (environment variables):
 | `DWG_MB_DATA` | `data/jobs/` | Folder for uploads and job results. |
 | `DWG2DXF` | `dwg2dxf` on `PATH` | Path to LibreDWG's `dwg2dxf`. |
 | `DWG_MB_MAX_UPLOAD_MB` | `300` | Upload size limit. |
-| `DWG_MB_MAX_PDF_MB` | `100` | PDF size limit. |
+| `DWG_MB_MAX_PDF_MB` | `100` | PDF size limit (total, when several PDFs are uploaded as one set). |
+| `DWG_MB_MAX_SET_FILES` | `40` | Most PDFs in one set. |
 | `MB_ENGINE` | `engine.mb` | Swap in another engine module. |
 
 ### Docker

@@ -317,6 +317,7 @@ table.mb { width: 100%; border-collapse: separate; border-spacing: 0; font-size:
 .rv-list input[type="checkbox"] { width: 18px; height: 18px; accent-color: var(--ink); }
 .rv-list input[type="text"] { border: 1px solid transparent; background: none; padding: 3px 6px; border-radius: 3px; font-weight: 600; width: 100%; color: var(--ink); }
 .rv-list input[type="text"]:hover, .rv-list input[type="text"]:focus { border-color: var(--rule-2); background: #fff; }
+.rv-list .sub .src { font-style: italic; }
 .rv-list .sub { grid-column: 2 / 4; display: flex; gap: 8px; align-items: center; color: var(--ink-2); font-size: 13px; }
 .rv-list select { height: 28px; border: 1px solid var(--rule-2); border-radius: 3px; background: #fff; color: var(--ink); font-size: 13px; }
 .rv-tools { display: flex; gap: 8px; align-items: center; padding: 10px 14px; border-bottom: 1px solid var(--rule); }
@@ -374,6 +375,7 @@ kbd { font: 500 12px/1 var(--sans); border: 1px solid var(--rule-2); border-bott
 .sh .noimg.all { font-size: 26px; }
 .sh .no { font: 13px/1.2 var(--iso); color: #eef5fa; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-top: 3px; }
 .sh.on .no { color: var(--signal); }
+.sh .src { color: var(--signal); opacity: .8; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-size: 11px; }
 .sh .ti { color: var(--mute-d); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-size: 11.5px; }
 .sh .meta { display: flex; gap: 6px; color: var(--mute-d); font-size: 11px; min-height: 13px; }
 .sh .meta i { font-style: normal; color: var(--warn-d); }
@@ -825,3 +827,18 @@ kbd { font: 500 12px/1 var(--sans); border: 1px solid var(--rule-2); border-bott
 
 /* AA contrast for negative quantities on the yellow selection */
 .mb tr.sel.neg td.c-q, .mb tr.sel.neg td.c-nos, .card.sel.neg .k-f b, .card.linked.neg .k-f b { color: #9b1c0c; }
+
+/* several PDFs chosen: shown as one set before reading */
+.setbox { margin: 14px 0 0; padding: 12px; border: 1px solid var(--signal); border-radius: 4px; }
+.setfiles { list-style: none; margin: 8px 0; padding: 0; display: grid; gap: 4px; max-height: 40vh; overflow: auto; }
+.setfiles li { display: flex; gap: 8px; align-items: center; justify-content: space-between; }
+.setfiles .nm { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.setfiles .sz { color: var(--mute-d); font-size: 12px; margin-left: auto; white-space: nowrap; }
+.setacts { display: flex; flex-wrap: wrap; gap: 8px; }
+
+/* quick build */
+.quick-up { margin: 0 0 12px; }
+.quick-up p { margin: 6px 0 0; }
+.quick-banner { display: flex; flex-wrap: wrap; gap: 8px 12px; align-items: center; justify-content: space-between; }
+.panel-foot { flex-wrap: wrap; }
+@media (max-width: 767px) { .panel-foot .btn { flex: 1 1 auto; } .quick-banner .btn { min-height: 44px; } }

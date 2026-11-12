@@ -111,6 +111,19 @@ class Acc:
                            "floor_group": floor_group})
 
 
+def _bars_area(self, element: str, location: str, dia: int, area_m2: float, kg_per_m2: float, status: str, remarks: str,
+               refs=None, floor_group: str = "", floor_order: float = 0, plan: str = ""):
+    """Steel from an area: qty (kg) = area x kg/m² (slabs, walls)."""
+    if not area_m2 or not kg_per_m2:
+        return
+    r = self.row("STEEL", f"Steel reinforcement (TMT) – {element}", f"{location} – #{dia}", None, round(area_m2, 3), round(kg_per_m2, 4), None, "kg", remarks,
+                 status, refs, None, floor_group, floor_order, plan)
+    self.steel.append({"element": element, "dia": dia, "kg": r.qty, "row": r.id, "status": status, "floor_group": floor_group})
+
+
+Acc.bars_area = _bars_area
+
+
 def _r3(v):
     return None if v is None else round(float(v), 3)
 
@@ -149,12 +162,17 @@ def build_struct_mb(geo: dict, cfg: dict | None = None) -> MBResult:
     A = Acc(cfg)
     shs = all_sheets(geo)
     roles = {sh.n: classify(sh) for sh in shs}
+    from . import rcc as RCC
+    rcc_found = RCC.find_plan_sheet(shs, skip=lambda sh: bool(T.parse_slab_schedule(sh)) and roles[sh.n] == "floor")
+    if rcc_found:
+        roles[rcc_found[0].n] = "rcc"
     by_role: dict[str, list[Sheet]] = defaultdict(list)
     for sh in shs:
         by_role[roles[sh.n]].append(sh)
     meta: dict = {"source": "pdf", "sheets": [], "schedules": {}, "calibration": {}, "counts": {}}
     for sh in shs:
-        meta["sheets"].append({"sheet": sh.n, "drawing_no": sheet_label(sh), "title": sh.title.get("title"),
+        meta["sheets"].append({"sheet": sh.n, "file": sh.info.get("file"), "page": sh.info.get("file_page"),
+                               "drawing_no": sheet_label(sh), "title": sh.title.get("title"),
                                "role": roles[sh.n], "scale": sh.title.get("scale"),
                                "floor_scope": sh.title.get("floor_scope")})
     if geo.get("scanned_pages"):
@@ -174,12 +192,12 @@ def build_struct_mb(geo: dict, cfg: dict | None = None) -> MBResult:
             break
     meta["notes"] = {k: v for k, v in notes.items() if k not in ("refs", "text")}
     nref = notes.get("refs", {})
-    if not notes.get("dev_length"):
+    if not notes.get("dev_length") and not rcc_found:
         A.flag("struct:notes:dev-length", "missing", "missing-data", "Development lengths not found in the notes",
                "Anchorage and laps of beam/column/pile bars need Ld per bar size.",
                input={"type": "number", "label": "Ld in tension, in bar diameters", "unit": "×d", "placeholder": "e.g. 47"})
     grade = notes.get("grade") or "M25"
-    if not notes.get("grade"):
+    if not notes.get("grade") and not rcc_found:
         A.flag("struct:notes:grade", "missing", "missing-data", "Concrete grade not written",
                input={"type": "text", "label": "Concrete grade", "placeholder": "e.g. M25"})
     pcc_mix = notes.get("pcc_mix")
@@ -200,6 +218,9 @@ def build_struct_mb(geo: dict, cfg: dict | None = None) -> MBResult:
                 return covers[k], f"cover {covers[k]} mm ({k.lower()}, notes)"
         return None, ""
 
+    rcc_out = None
+    if rcc_found:
+        rcc_out = RCC.build_rcc(A, shs, cfg, meta, sheet_label)
     # ---------------- schedules
     sched: dict = {"beam": {}, "slab": {}}
     floor_sheets = sorted(by_role.get("floor", []), key=lambda s: s.n)
@@ -234,6 +255,8 @@ def build_struct_mb(geo: dict, cfg: dict | None = None) -> MBResult:
     for n, d in sched["slab"].items():
         if d.get("_table"):
             tabs.append(d["_table"].to_dict())
+    if rcc_out and rcc_out.get("tables"):
+        tabs = tabs + rcc_out["tables"]
     meta["schedules"] = {"tables": tabs,
                          "pile": {k: v for k, v in pile.items() if not k.startswith("_") and k != "refs"}}
     _schedule_consistency(A, sched, floor_sheets)
@@ -305,6 +328,8 @@ def build_struct_mb(geo: dict, cfg: dict | None = None) -> MBResult:
             A.assume(f"{meta['calibration'][n]['drawing_no']}: plan scale {c.pt_per_mm:.5f} pt/mm (≈1:{c.scale_1_to}) "
                      f"by {c.method}, {c.n} samples, spread {c.spread * 100:.2f}%.")
 
+    if rcc_out:
+        region[rcc_out["sheet"].n] = rcc_out["region"]
     # ---------------- foundations
     raft_sh = next(iter(by_role.get("raft", [])), None)
     pile_sh = next(iter(by_role.get("pile", [])), None)
@@ -318,7 +343,8 @@ def build_struct_mb(geo: dict, cfg: dict | None = None) -> MBResult:
 
     # ---------------- columns
     base_sh = raft_sh or pile_sh
-    _columns(A, base_sh, floor_sheets, blobs, region, calib, column, Ld, cover, meta, notes)
+    if not rcc_out:
+        _columns(A, base_sh, floor_sheets, blobs, region, calib, column, Ld, cover, meta, notes)
     _footing_column_check(A, footing, column, meta, base_sh)
 
     # ---------------- plinth beams
@@ -1152,7 +1178,7 @@ def _floor_scope_checks(A: Acc, floor_sheets, notes):
 # ---------------------------------------------------------------------- abstract / steel
 
 def _abstract(rows: list[MBRow]) -> list[AbstractRow]:
-    order = ["EARTHWORK", "PCC", "RCC", "STEEL"]
+    order = ["EARTHWORK", "PCC", "RCC", "SHUTTERING", "STEEL"]
     groups: dict[tuple, list[MBRow]] = {}
     for r in rows:
         groups.setdefault((r.trade, r.item, r.unit), []).append(r)
@@ -1186,7 +1212,8 @@ def steel_summary(steel: list[dict]) -> dict:
 
 # ====================================================================== review step
 ROLE_REASON = {"pile": "Pile layout: piles counted and measured", "raft": "Raft: area and thickness measured",
-               "footing": "Footings measured", "plinth": "Plinth beams measured", "floor": "Beams and slabs measured"}
+               "footing": "Footings measured", "plinth": "Plinth beams measured", "floor": "Beams and slabs measured",
+               "rcc": "RCC plan: beams, slabs, columns, walls, stubs measured (concrete, shuttering, steel)"}
 
 
 def struct_review(shs, roles, region, tabs, notes_sheet, mode, A: Acc, cfg: dict) -> dict:
@@ -1209,7 +1236,7 @@ def struct_review(shs, roles, region, tabs, notes_sheet, mode, A: Acc, cfg: dict
                 v["purpose"], v["reason"] = "unused", f"Not measured: foundation answered as {mode.replace('_', ' ')}"
             if tab_sheets.get(sh.n):
                 v["reason"] += "; schedules: " + ", ".join(dict.fromkeys(tab_sheets[sh.n])).lower()
-            if role == "floor":
+            if role in ("floor", "rcc"):
                 mult = int(fs.get("multiplier") or 1)
                 plans.append({"id": k, "sheet": sh.n, "name": lab, "group": fs.get("label") or lab, "multiplier": mult,
                               "floors": list(range(int(fs["from"]), int(fs["to"]) + 1)) if fs.get("from") is not None and fs.get("to") is not None else [],
@@ -1254,7 +1281,7 @@ def struct_review(shs, roles, region, tabs, notes_sheet, mode, A: Acc, cfg: dict
                           ("not written – please enter" if sunk is not None else "no sunken slabs found"),
                           "assumed": sunk is not None and sunk.status == "open", "flag_ids": [sunk.id] if sunk is not None else []}}
     want = ("struct:columns:height:", "struct:foundation:pile-vs-raft", "struct:slabs:sunken-depth", "struct:notes:grade",
-            "struct:notes:dev-length")
+            "struct:notes:dev-length", "struct:notes:cover", "struct:slabs:sunken")
     qs = []
     for f in flags:
         cal = f.id.startswith("struct:calibration:") and f.severity == "missing"

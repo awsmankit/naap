@@ -75,20 +75,26 @@ def _envelope(fn, *args) -> str:
         return json.dumps({"status": exc.status, "body": {"detail": exc.detail}})
 
 
-def new_job(filename: str, size: int) -> str:
-    """Validate the name and size, create the job folder; the worker then writes input.<ext>."""
-    return _envelope(_new_job, filename, size)
+def new_job(filename: str, size: int, names_json: str | None = None) -> str:
+    """Validate the name and size, create the job folder; the worker then writes input.<ext>
+    (a set of PDFs: input_1.pdf, input_2.pdf ...; `size` is then the total, `names_json` the names)."""
+    return _envelope(_new_job, filename, size, names_json)
 
 
-def _new_job(filename: str, size: int) -> dict:
-    name = Path(filename or "").name
-    ext = Path(name).suffix.lower()
-    if ext not in jobs.ALLOWED_EXT:
+def _new_job(filename: str, size: int, names_json: str | None = None) -> dict:
+    names = [Path(n or "").name for n in json.loads(names_json)] if names_json else [Path(filename or "").name]
+    exts = [Path(n).suffix.lower() for n in names]
+    if not names or any(e not in jobs.ALLOWED_EXT for e in exts):
         raise ServiceError(400, "Only .dwg, .dxf and .pdf files are accepted")
+    if len(names) > 1 and set(exts) != {".pdf"}:
+        raise ServiceError(400, "A drawing set can only be several PDFs: open a DWG or DXF on its own, not mixed with other files")
+    if len(names) > service.MAX_SET_FILES:
+        raise ServiceError(400, f"A set can have at most {service.MAX_SET_FILES} files")
+    ext = exts[0]
     max_mb = service.MAX_PDF_MB if ext == ".pdf" else service.MAX_UPLOAD_MB
     if size > max_mb * 1024 * 1024:
-        raise ServiceError(413, f"File larger than {max_mb} MB")
-    job_id, _ = jobs.new_job(name, ext)
+        raise ServiceError(413, f"Files larger than {max_mb} MB in total" if len(names) > 1 else f"File larger than {max_mb} MB")
+    job_id, _ = jobs.new_job(names[0], ext, names)
     return {"id": job_id}
 
 
@@ -101,12 +107,16 @@ def _accept_input(job_id: str) -> dict:
     d = service.job_path(job_id)
     st = jobs.read_state(d)
     ext = "." + st["kind"]
-    dest = d / f"input{ext}"
-    size = dest.stat().st_size if dest.exists() else 0
-    if size == 0 or not jobs.sniff(dest, ext):
+    names = st.get("files") or [st["filename"]]
+    paths = jobs.pdf_inputs(d) if ext == ".pdf" else [d / f"input{ext}"]
+    ok = len(paths) == len(names) and all(p.exists() and p.stat().st_size > 0 and jobs.sniff(p, ext) for p in paths)
+    if not ok:
+        bad = next((n for p, n in zip(paths, names) if not (p.exists() and p.stat().st_size > 0 and jobs.sniff(p, ext))), None)
         jobs.delete_job(job_id)
         what = "PDF (no %PDF- header)" if ext == ".pdf" else f"{ext[1:].upper()} drawing"
-        raise ServiceError(400, f"File does not look like a valid {what}")
+        raise ServiceError(400, f"{bad} does not look like a valid {what}" if bad and len(names) > 1
+                           else f"File does not look like a valid {what}")
+    size = sum(p.stat().st_size for p in paths)
     return jobs.update_state(d, status="queued", message="Queued", size=size)
 
 
@@ -149,7 +159,7 @@ def export_project(job_id: str) -> str:
     out = d / "project.naap.json"
     with out.open("w") as fh:
         head = {"format": PROJECT_FORMAT, "version": PROJECT_VERSION, "saved": time.time(),
-                "job": {k: st.get(k) for k in ("filename", "kind", "size", "timings", "stats", "created")}}
+                "job": {k: st.get(k) for k in ("filename", "files", "kind", "size", "timings", "stats", "created")}}
         fh.write(json.dumps(head)[:-1])
         fh.write(',"config":')
         fh.write((d / "config.json").read_text())
@@ -159,9 +169,16 @@ def export_project(job_id: str) -> str:
             fh.write(',"result":')
             fh.write(cache.read_text())
         if st.get("kind") == "pdf":
-            fh.write(',"input_pdf":"')
-            fh.write(base64.b64encode((d / "input.pdf").read_bytes()).decode("ascii"))
-            fh.write('"')
+            pdfs = jobs.pdf_inputs(d)
+            if len(pdfs) == 1:   # the same layout as before sets existed, so older builds can still open it
+                fh.write(',"input_pdf":"')
+                fh.write(base64.b64encode(pdfs[0].read_bytes()).decode("ascii"))
+                fh.write('"')
+            else:                # one file at a time: only one copy is in memory
+                fh.write(',"input_pdfs":[')
+                for i, p in enumerate(pdfs):
+                    fh.write(("," if i else "") + '"' + base64.b64encode(p.read_bytes()).decode("ascii") + '"')
+                fh.write("]")
         fh.write("}")
     stem = re.sub(r"[^\w\- ]", "", Path(st["filename"]).stem)[:60] or "drawing"
     return json.dumps({"file": str(out), "filename": f"{stem}.naap.json"})
@@ -188,15 +205,18 @@ def _import_project(path: str) -> dict:
     if kind not in ("dwg", "dxf", "pdf") or not isinstance(cfg, dict) or not isinstance(geo, dict) \
             or not isinstance(geo.get("entities"), list):
         raise ServiceError(400, "The project file is incomplete (job, config or geometry missing)")
-    if kind == "pdf" and not isinstance(data.get("input_pdf"), str):
+    pdfs = data.get("input_pdfs") if isinstance(data.get("input_pdfs"), list) else [data.get("input_pdf")]
+    if kind == "pdf" and (not pdfs or not all(isinstance(x, str) for x in pdfs)):
         raise ServiceError(400, "The project file has no PDF in it")
     result = data.get("result")
     has_result = isinstance(result, dict) and isinstance(result.get("rows", result.get("mb")), list)
-    job_id, d = jobs.new_job(str(job.get("filename") or "drawing"), "." + kind)
+    job_id, d = jobs.new_job(str(job.get("filename") or "drawing"), "." + kind,
+                          [str(f) for f in job["files"]] if isinstance(job.get("files"), list) and len(job["files"]) == len(pdfs) else None)
     try:
         (d / "geometry.json").write_text(json.dumps(geo, separators=(",", ":")))
         if kind == "pdf":
-            (d / "input.pdf").write_bytes(base64.b64decode(data["input_pdf"], validate=True))
+            for i, b64 in enumerate(pdfs):
+                (d / jobs.pdf_input_name(i, len(pdfs))).write_bytes(base64.b64decode(b64, validate=True))
         (d / "config.json").write_text(json.dumps(cfg, indent=1))
         if has_result:   # written after the config, so GET /mb serves it without running the engine
             (d / "mb_result.json").write_text(json.dumps(result, separators=(",", ":"), default=str))

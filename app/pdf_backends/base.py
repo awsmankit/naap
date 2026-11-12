@@ -39,6 +39,7 @@ class TextSpan:
     font: str = ""
     layer: str = ""
     seq: int = 0
+    parts: tuple = ()               # ((text, bbox), ...) of the spans merged into this one (set by the merge step)
 
 
 @dataclass
@@ -94,3 +95,14 @@ class BackendInfo:
     name: str
     licence: str
     features: list[str] = field(default_factory=list)
+
+
+class PdfWriter(Protocol):
+    """Minimal PDF output used by the DXF -> PDF converter (convert/to_pdf.py).
+    Coordinates: PDF points, origin top-left, y down. Colours: RGB 0..1."""
+
+    def add_page(self, width: float, height: float, background: tuple | None = (1.0, 1.0, 1.0)) -> None: ...
+    def strokes(self, polylines: Iterable[list[Point]], color: tuple, width: float) -> None: ...
+    def fills(self, polygons: Iterable[list[Point]], color: tuple) -> None: ...   # even-odd
+    def text(self, origin: Point, s: str, size: float, angle_deg: float, color: tuple) -> bool: ...
+    def tobytes(self) -> bytes: ...

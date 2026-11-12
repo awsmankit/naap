@@ -1,7 +1,7 @@
 // App shell: Upload -> Review -> Measurement book, with two-way traceability
 // between the ledger and the drawing.
 
-import { S, A, rowById } from "./state.js";
+import { S, A, rowById, sheetSource } from "./state.js";
 import { $, $$, el, fq, fmt, unit, debounce, toast, unionBox, validBox } from "./util.js";
 import { api, MOCK, LOCAL, CAN_PROJECTS, UNREACHABLE, loadMB, putConfig, runCheck, runBuild, putCalibration, normalise,
   uploadJob, sampleFile, sheetImage, xlsxHref, downloadXlsx, saveProject, openProject, warmup } from "./api.js";
@@ -87,10 +87,12 @@ const STAGES = [["upload", LOCAL ? "Load the engine in this browser" : "Upload"]
 const ACCEPT = ["dwg", "dxf", "pdf"];
 
 function resetUpload() {
+  hideSet();
   $("#stages").hidden = true;
   $("#upErr").hidden = true;
   $("#fileInput").value = "";
   $("#dropzone").classList.remove("busy");
+  syncQuickUp();
   setTB({ name: "Awaiting file", size: "—", units: "—", ents: "—", layers: "—", views: "—", time: "—" }, false);
   loadRecent();
 }
@@ -136,6 +138,7 @@ function upErr(msg, { oom = OOM_RE.test(String(msg)), interrupted = false } = {}
   }
   box.hidden = false;
   $("#dropzone").classList.remove("busy");
+  syncQuickUp();
   clearInterval(slowT);
 }
 
@@ -149,18 +152,65 @@ function badFile(file, ext) {
   return `“${file.name}” is not a .dwg, .dxf or .pdf file. Export the drawing from CAD as DWG, DXF or a vector PDF and try again.`;
 }
 
-async function uploadFile(file, { checked = false } = {}) {
-  if (CAN_PROJECTS && /\.naap\.json$|\.json$/i.test(file.name)) return openProjectFile(file);
-  const ext = file.name.toLowerCase().split(".").pop();
+// ---- several files: only PDFs can be read together as one drawing set
+const extOf = (f) => f.name.toLowerCase().split(".").pop();
+const naturalName = (a, b) => a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: "base" });
+let setFiles = [];
+
+function hideSet() { setFiles = []; $("#setBox").hidden = true; }
+
+/** Files from the picker or a drop: one file is read at once; several PDFs wait in the set panel. */
+function chooseFiles(list) {
+  const files = [...list];
+  hideSet();
+  if (!files.length) return;
+  if (files.length === 1) return uploadFile(files[0]);
+  const bad = files.find((f) => extOf(f) !== "pdf");
+  if (bad) {
+    const kinds = [...new Set(files.map(extOf))];
+    return upErr(kinds.length > 1
+      ? `These files are of different types (${kinds.map((k) => "." + k).join(", ")}). A drawing set can only be several PDFs: choose the PDFs on their own, or one DWG or DXF on its own.`
+      : `Only PDF files can be read together as one set. “${bad.name}” is a .${extOf(bad)} file: open it on its own.`);
+  }
+  $("#upErr").hidden = true;
+  setFiles = files.sort(naturalName);
+  renderSet();
+}
+
+function renderSet() {
+  const box = $("#setBox"), n = setFiles.length;
+  if (n < 2) { const only = setFiles[0]; hideSet(); if (only) uploadFile(only); return; }
+  const max = S.meta?.max_pdf_mb || 100, total = setFiles.reduce((t, f) => t + f.size, 0);
+  const maxFiles = S.meta?.max_set_files || 40;
+  box.hidden = false;
+  $("#setTitle").textContent = `${n} files as one set`;
+  $("#setFiles").replaceChildren(...setFiles.map((f, i) => el("li", {},
+    el("span", { class: "nm", title: f.name }, `${i + 1}. ${f.name}`),
+    el("span", { class: "sz" }, `${(f.size / 1e6).toFixed(1)} MB`),
+    el("button", { class: "link", type: "button", "aria-label": `Remove ${f.name} from the set`, onclick: () => { setFiles.splice(i, 1); renderSet(); $("#setGo").focus(); } }, "Remove"))));
+  const over = total > max * 1024 * 1024 ? `Together they are ${(total / 1e6).toFixed(0)} MB; the limit is ${max} MB.` : n > maxFiles ? `A set can have at most ${maxFiles} files.` : "";
+  const empty = setFiles.find((f) => !f.size);
+  $("#setGo").disabled = !!over || !!empty;
+  if (over || empty) upErr(over || `“${empty.name}” is empty (0 bytes). Remove it from the set.`); else $("#upErr").hidden = true;
+}
+$("#setGo").addEventListener("click", () => { const files = setFiles; hideSet(); uploadFile(files); });
+$("#setCancel").addEventListener("click", () => { hideSet(); $("#upErr").hidden = true; $("#fileInput").value = ""; $("#dropzone").focus(); });
+
+async function uploadFile(input, { checked = false } = {}) {
+  const set = Array.isArray(input) ? input : null;
+  // a set is described to the rest of the page as one pseudo file: its total size and "N PDF files"
+  const file = set ? { name: `${set.length} PDF files (${set[0].name}, …)`, size: set.reduce((t, f) => t + f.size, 0) } : input;
+  if (!set && CAN_PROJECTS && /\.naap\.json$|\.json$/i.test(file.name)) return openProjectFile(file);
+  const ext = set ? "pdf" : file.name.toLowerCase().split(".").pop();
   if (!ACCEPT.includes(ext)) return upErr(badFile(file, ext));
   if (!file.size) return upErr(`“${file.name}” is empty (0 bytes). Save or export the drawing again and retry.`);
   const max = ext === "pdf" ? S.meta?.max_pdf_mb || 100 : S.meta?.max_upload_mb || 300;
-  if (file.size > max * 1024 * 1024) return upErr(`The file is ${(file.size / 1e6).toFixed(0)} MB; the limit is ${max} MB.`);
+  if (file.size > max * 1024 * 1024) return upErr(set ? `Together the files are ${(file.size / 1e6).toFixed(0)} MB; the limit is ${max} MB.` : `The file is ${(file.size / 1e6).toFixed(0)} MB; the limit is ${max} MB.`);
   if (LOCAL && !checked) {
-    const a = assess(file);
+    const a = assess({ name: set ? set[0].name : file.name, size: file.size });
     if (a.risky) {
       const choice = await guardDialog(file, a);
-      if (choice === "continue") return uploadFile(file, { checked: true });
+      if (choice === "continue") return uploadFile(input, { checked: true });
       if (choice === "project") { $("#projectInput").click(); return; }
       if (choice === "laptop") upNote(laptopNote(file));
       return;
@@ -169,11 +219,12 @@ async function uploadFile(file, { checked = false } = {}) {
   if (LOCAL) markReading({ name: file.name, size: file.size });
   $("#upErr").hidden = true;
   $("#dropzone").classList.add("busy");
+  S.quickArmed = false; syncQuickUp();
   setTB({ name: file.name, size: `${(file.size / 1e6).toFixed(1)} MB`, units: "—", ents: "—", layers: "—", views: "—", time: "0 s" });
   const t0 = Date.now();
   const timer = setInterval(() => setTB({ time: `${Math.round((Date.now() - t0) / 1000)} s` }), 500);
   renderStages("uploading", ext, { msg: LOCAL ? "Starting…" : "0%", pct: 0 });
-  uploadJob(file, (p) => renderStages("uploading", ext, p))
+  uploadJob(input, (p) => renderStages("uploading", ext, p))
     .then((body) => pollJob(body.id, t0).catch((e) => { clearReading(); upErr(e.message, { oom: e.oom || OOM_RE.test(e.message) }); }),
       (e) => { clearReading(); renderStages("error", ext); upErr(e.message, { oom: e.oom }); })
     .finally(() => clearInterval(timer));
@@ -259,6 +310,7 @@ async function pollJob(id, t0 = Date.now()) {
   clearInterval(slowT); $(".note-slow")?.remove(); clearReading();
   S.polling = null;
   await openJob(id, "review");
+  if (S.quickArmed) await quickBuild();
 }
 
 /** Engine errors in words a user can act on (scanned PDFs, broken DWGs, memory). */
@@ -303,10 +355,10 @@ dz.addEventListener("dragover", (e) => { e.preventDefault(); dz.classList.add("o
 dz.addEventListener("dragenter", warmup, { once: true });
 dz.addEventListener("pointerenter", warmup, { once: true });
 dz.addEventListener("dragleave", () => dz.classList.remove("over"));
-dz.addEventListener("drop", (e) => { e.preventDefault(); dz.classList.remove("over"); if (e.dataTransfer.files[0]) uploadFile(e.dataTransfer.files[0]); });
+dz.addEventListener("drop", (e) => { e.preventDefault(); dz.classList.remove("over"); chooseFiles(e.dataTransfer.files); });
 dz.addEventListener("click", (e) => { if (!dz.classList.contains("busy") && !e.target.closest("label, input")) $("#fileInput").click(); });
 dz.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); $("#fileInput").click(); } });
-$("#fileInput").addEventListener("change", (e) => { if (e.target.files[0]) uploadFile(e.target.files[0]); });
+$("#fileInput").addEventListener("change", (e) => chooseFiles(e.target.files));
 $("#btnSample").addEventListener("click", async (e) => {
   e.preventDefault();
   try {
@@ -435,10 +487,11 @@ function renderSheetStrip() {
   const openBySheet = new Map(), rowsBySheet = new Map();
   for (const f of S.mb?.flags || []) if (f.status === "open") { const n = f.refs[0] ? sheetOfRef(f.refs[0]) : null; if (n != null) openBySheet.set(n, (openBySheet.get(n) || 0) + 1); }
   for (const r of S.mb?.rows || []) { const n = r.refs[0] ? sheetOfRef(r.refs[0]) : null; if (n != null) rowsBySheet.set(n, (rowsBySheet.get(n) || 0) + 1); }
-  const card = (n, label, title, img, extra) => el("button", {
-    type: "button", class: `sh${S.sheet === n ? " on" : ""}`, "aria-pressed": String(S.sheet === n), title: title ? `${label} · ${title}` : label,
+  const card = (n, label, title, img, extra, src = "") => el("button", {
+    type: "button", class: `sh${S.sheet === n ? " on" : ""}`, "aria-pressed": String(S.sheet === n),
+    title: [label, title, src].filter(Boolean).join(" · "),
     onclick: () => { setSheet(n); if (S.sel && S.sel.kind !== "entity") select(S.sel.kind, S.sel.key, { from: "strip", fly: false }); },
-  }, img, el("span", { class: "no" }, label), el("span", { class: "ti" }, title || ""), extra);
+  }, img, el("span", { class: "no" }, label), el("span", { class: "ti" }, title || ""), src ? el("span", { class: "src" }, src) : null, extra);
   const items = S.geo.sheets.map((s) => {
     const label = sheetName(s.sheet), tb = s.title_block || {};
     const img = S.jobId && !s.scanned ? el("img", { alt: "", loading: "lazy", decoding: "async" }) : el("span", { class: "noimg" }, s.scanned ? "scanned" : "");
@@ -446,10 +499,10 @@ function renderSheetStrip() {
     const fl = openBySheet.get(s.sheet), nr = rowsBySheet.get(s.sheet);
     const extra = el("span", { class: "meta" }, nr ? `${fmt(nr, 0)} lines` : "", fl ? el("i", { title: `${fl} open flags` }, `${fl} ⚑`) : null,
       tb.floor_scope?.multiplier > 1 ? el("i", { class: "x" }, `×${tb.floor_scope.multiplier}`) : null);
-    return card(s.sheet, label, tb.title, img, extra);
+    return card(s.sheet, label, tb.title, img, extra, sheetSource(s.sheet));
   });
   strip.replaceChildren(el("div", { class: "strip-in", role: "group", "aria-label": "Sheets" },
-    card(null, "All", `${S.geo.sheets.length} sheets side by side`, el("span", { class: "noimg all" }, "▦"), null), ...items));
+    card(null, "All", `${S.geo.sheets.length} sheets side by side${new Set(S.geo.sheets.map((s) => s.file)).size > 1 ? ` from ${new Set(S.geo.sheets.map((s) => s.file)).size} files` : ""}`, el("span", { class: "noimg all" }, "▦"), null), ...items));
   S.viewer.insetTop = strip.hidden ? 0 : strip.offsetHeight + 12;
   strip.querySelector(".sh.on")?.scrollIntoView({ block: "nearest", inline: "nearest" });
 }
@@ -587,7 +640,36 @@ async function buildAndShow({ rebuild = true, save = true, fallback = null } = {
     if (S.step === "review") renderReview();
   }
 }
-$("#btnBuild").addEventListener("click", () => buildAndShow({ rebuild: true }));
+$("#btnBuild").addEventListener("click", () => { if (S.cfg) delete S.cfg.quick; buildAndShow({ rebuild: true }); });
+
+// ---- quick build: no review, the engine's defaults; assumed values stay marked in the book
+async function quickBuild() {
+  if (!S.geo || !S.cfg) return;
+  S.quickArmed = false;
+  S.cfg.quick = true;
+  if (S.step === "upload") setStep("review", { nav: false });
+  await buildAndShow({ rebuild: true, fallback: "review" });
+  if (!S.mb) delete S.cfg.quick;
+}
+const assumedCount = () => (S.mb?.rows || []).filter((r) => r.status === "assumed" || r.status === "unresolved").length;
+function renderQuickBanner() {
+  const on = !!(S.cfg?.quick && S.mb);
+  $("#quickBanner").hidden = !on;
+  if (on) $("#quickMsg").textContent = `Built with ${assumedCount()} assumed values. Review them to improve accuracy`;
+}
+$("#quickReview").addEventListener("click", () => setStep("review"));
+$("#btnQuick").addEventListener("click", quickBuild);
+$("#btnQuickUp").addEventListener("click", () => {
+  if (S.geo && S.jobId && !$("#dropzone").classList.contains("busy")) return quickBuild();
+  S.quickArmed = !S.quickArmed;
+  syncQuickUp();
+});
+function syncQuickUp() {
+  const busy = $("#dropzone").classList.contains("busy"), ready = !!(S.geo && S.jobId);
+  $("#quickUp").hidden = !(busy || ready);
+  $("#btnQuickUp").textContent = busy ? (S.quickArmed ? "Quick build: on (tap to cancel)" : "Quick build when ready") : "Quick build";
+  $("#btnQuickUp").setAttribute("aria-pressed", busy ? String(!!S.quickArmed) : "false");
+}
 
 /** Mock MB + the job's real flags from POST /check (so resolving is real). */
 async function withLiveFlags(mb) {
@@ -653,6 +735,7 @@ function setMB(mb, source) {
       S.offline ? "are simulated." : "come from the real checks on this job.");
   } else n.hidden = true;
   updateXlsx();
+  renderQuickBanner();
   if (S.isPdf) renderSheetStrip();
 }
 

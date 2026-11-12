@@ -15,3 +15,11 @@ def open_pdf(path, backend: str | None = None):
     if name not in BACKENDS:
         raise ValueError(f"unknown PDF backend {name!r}; available: {sorted(BACKENDS)}")
     return importlib.import_module(BACKENDS[name]).open_pdf(str(path))
+
+
+def open_writer(backend: str | None = None):
+    """A new, empty PDF writer (see base.PdfWriter) from the selected backend."""
+    name = backend or os.environ.get("PDF_BACKEND", "pymupdf")
+    if name not in BACKENDS:
+        raise ValueError(f"unknown PDF backend {name!r}; available: {sorted(BACKENDS)}")
+    return importlib.import_module(BACKENDS[name]).open_writer()

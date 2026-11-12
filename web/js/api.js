@@ -159,13 +159,16 @@ export const putCalibration = (id, body) => api(`/api/jobs/${id}/calibration`, {
  * Send a drawing to the engine. onProgress({msg, pct}) reports the upload (server) or loading
  * the in-browser engine (local). Resolves {id}; then poll GET /api/jobs/{id} for the stages.
  */
-export function uploadJob(file, onProgress = () => {}) {
+export function uploadJob(fileOrFiles, onProgress = () => {}) {
+  const files = Array.isArray(fileOrFiles) ? fileOrFiles : [fileOrFiles];
   if (engine) {
     return (async () => {
       engine.onProgress = onProgress;
       try {
-        const buf = await file.arrayBuffer();
-        const r = unpack(await engine.send({ type: "upload", name: file.name, size: file.size, buf }, [buf]));
+        // each file is read and handed over (not copied) in turn; the worker writes them one by one
+        const bufs = [];
+        for (const f of files) bufs.push(await f.arrayBuffer());
+        const r = unpack(await engine.send({ type: "upload", files: files.map((f, i) => ({ name: f.name, size: f.size, buf: bufs[i] })) }, bufs));
         engine.state.set(r.id, r.state);
         if (r.state.status !== "ready" && r.state.status !== "error") engine.busy.add(r.id);
         return { id: r.id };
@@ -174,7 +177,7 @@ export function uploadJob(file, onProgress = () => {}) {
   }
   return new Promise((resolve, reject) => {
     const fd = new FormData();
-    fd.append("file", file);
+    for (const f of files) fd.append("file", f);
     const xhr = new XMLHttpRequest();
     xhr.open("POST", "/api/jobs");
     xhr.upload.onprogress = (e) => { if (e.lengthComputable) onProgress({ msg: `${Math.round((e.loaded / e.total) * 100)}% of ${(e.total / 1e6).toFixed(1)} MB`, pct: Math.round((e.loaded / e.total) * 100) }); };

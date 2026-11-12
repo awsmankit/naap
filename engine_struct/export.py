@@ -39,7 +39,7 @@ def _header(ws, cols, widths, title=None) -> int:
     return r + 1
 
 
-def write_struct_xlsx(res: MBResult, dest, project: str = "") -> None:
+def write_struct_xlsx(res: MBResult, dest, project: str = "", quick: bool = False) -> None:
     wb = Workbook()
     ws = wb.active
     ws.title = "MB"
@@ -174,6 +174,9 @@ def write_struct_xlsx(res: MBResult, dest, project: str = "") -> None:
         ws.cell(row=r, column=1, value=i)
         ws.cell(row=r, column=2, value=a).alignment = Alignment(wrap_text=True)
         r += 1
+    if quick:
+        from engine.quick import add_assumed_rows
+        add_assumed_rows(ws, res, r)
 
     ws = wb.create_sheet("Calibration")
     r = _header(ws, ["Sheet", "Drawing", "pt per mm", "≈ 1:N", "Samples", "Spread %", "Method", "Sources"],
@@ -183,6 +186,9 @@ def write_struct_xlsx(res: MBResult, dest, project: str = "") -> None:
                                c.get("spread_pct"), c.get("method"), str(c.get("sources"))], start=1):
             ws.cell(row=r, column=k, value=v).border = BOX
         r += 1
+    if quick:
+        from engine.quick import add_readme
+        add_readme(wb, res, project)
     wb.save(dest if not isinstance(dest, Path) else str(dest))
 
 

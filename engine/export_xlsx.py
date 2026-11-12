@@ -41,7 +41,7 @@ def _product(*vals) -> float:
     return math.prod(present) if present else 0.0
 
 
-def write_xlsx(result: MBResult, dest: str | Path | BytesIO, project: str = "") -> None:
+def write_xlsx(result: MBResult, dest: str | Path | BytesIO, project: str = "", quick: bool = False) -> None:
     wb = Workbook()
 
     # ---- MB -------------------------------------------------------------
@@ -175,6 +175,9 @@ def write_xlsx(result: MBResult, dest: str | Path | BytesIO, project: str = "") 
     for k, v in (result.meta or {}).items():
         ws.cell(row=r, column=2, value=f"{k}: {v}")
         r += 1
+    if quick:
+        from .quick import add_assumed_rows
+        add_assumed_rows(ws, result, r)
 
     # ---- Flags ----------------------------------------------------------
     ws = wb.create_sheet("Flags")
@@ -202,5 +205,8 @@ def write_xlsx(result: MBResult, dest: str | Path | BytesIO, project: str = "") 
     if not result.flags:
         ws.cell(row=r, column=1, value="No flags")
 
+    if quick:
+        from .quick import add_readme
+        add_readme(wb, result, project)
     wb.calculation.fullCalcOnLoad = True  # Qty/Total/Abstract cells are formulas
     wb.save(dest)

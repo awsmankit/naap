@@ -4,6 +4,7 @@
 export const TRADES = [
   { name: "Earthwork & PCC", d: "#d2a86e", p: "#8a6532", re: /earth|excavat|pcc|foundation|footing|filling|plinth/i },
   { name: "Masonry", d: "#ff8a5c", p: "#c2410c", re: /brick|masonry|aac|block work|parapet wall|half brick/i },
+  { name: "Shuttering", d: "#ffc36b", p: "#a35a00", re: /shuttering|formwork|centering/i },
   { name: "Steel", d: "#c3e86b", p: "#56730f", re: /\bsteel\b|reinforc|\btmt\b/i },
   { name: "RCC", d: "#9fb7ff", p: "#4458b8", re: /\brcc\b|slab|beam|column|lintel|coping|concrete(?! flooring)/i },
   { name: "Plastering", d: "#f2d14b", p: "#8f7300", re: /plaster|groove|render|pointing|ceiling/i },

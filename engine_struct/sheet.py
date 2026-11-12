@@ -15,6 +15,7 @@ class Txt:
     rot: float
     layer: str
     handle: str
+    parts: list | None = None     # [[text, x0, y0, x1, y1], ...] original spans when several were merged
 
     @property
     def cx(self) -> float:
@@ -117,7 +118,7 @@ class Sheet:
             ln = lay[e["l"]]
             t = e["t"]
             if t == "T":
-                self.texts.append(Txt(e["s"], tuple(e["bb"]), e.get("f", e.get("h", 0)), e.get("r", 0), ln, e["handle"]))
+                self.texts.append(Txt(e["s"], tuple(e["bb"]), e.get("f", e.get("h", 0)), e.get("r", 0), ln, e["handle"], e.get("parts")))
             elif t == "L":
                 p = e["p"]
                 self.segs.append(Seg(p[0], p[1], p[2], p[3], ln, e["handle"], bool(e.get("dash"))))
@@ -172,3 +173,15 @@ class Sheet:
 
 def sheets(geo: dict) -> list[Sheet]:
     return [Sheet(geo, s) for s in geo.get("sheets", []) if not s.get("scanned")]
+
+
+def words(sh: "Sheet") -> list[Txt]:
+    """Texts with merged spans split back into their original pieces (needed for table cells)."""
+    out = []
+    for t in sh.texts:
+        if t.parts:
+            for s, x0, y0, x1, y1 in t.parts:
+                out.append(Txt(s, (min(x0, x1), min(y0, y1), max(x0, x1), max(y0, y1)), t.size, t.rot, t.layer, t.handle))
+        else:
+            out.append(t)
+    return out

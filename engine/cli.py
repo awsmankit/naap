@@ -84,6 +84,7 @@ def main(argv=None) -> int:
     ap.add_argument("--flags-json", help="write the flags here (JSON)")
     ap.add_argument("--result-json", help="write the full result (rows with drawing refs) here (JSON)")
     ap.add_argument("--dump-config", help="write the effective config (guessed roles/regions + yours) here")
+    ap.add_argument("--quick", action="store_true", help="no questions: build with the engine's defaults (assumed values marked) and add a 'Read me first' sheet; --config answers are still applied")
     args = ap.parse_args(argv)
 
     from app.extract import extract
@@ -104,7 +105,7 @@ def main(argv=None) -> int:
     res = build_mb(geo, cfg)
     out = Path(args.out)
     out.parent.mkdir(parents=True, exist_ok=True)
-    write_xlsx(res, out, project=cfg["project"]["name"])
+    write_xlsx(res, out, project=cfg["project"]["name"], quick=args.quick)
     if args.flags_json:
         Path(args.flags_json).write_text(json.dumps([asdict(f) for f in res.flags], indent=1, default=str))
     if args.result_json:
@@ -122,6 +123,9 @@ def main(argv=None) -> int:
     print(f"flags: {len(res.flags)} total, {len(open_)} open {by}")
     for f in open_[:40]:
         print(f"  [{f.severity}] {f.id}: {f.title}" + (f"  (input: {f.input.get('label')})" if f.input else ""))
+    if args.quick:
+        from engine.quick import counts
+        print(f"quick build: {counts(res)['assumed']} rows use assumed values; see 'Read me first', Assumptions and Flags in the workbook")
     print(f"wrote {out}" + (f", {args.flags_json}" if args.flags_json else "") + (f", {args.result_json}" if args.result_json else ""))
     return 0
 

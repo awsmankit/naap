@@ -6,7 +6,7 @@
 // IndexedDB and moves bytes in and out. Nothing is sent over the network: the only fetches are
 // the site's own runtime files.
 //
-// Messages in:  {type: "call", id, method, url, body} | {type: "upload", id, name, size, buf}
+// Messages in:  {type: "call", id, method, url, body} | {type: "upload", id, files: [{name, size, buf}, ...]} (several only for a PDF set)
 //               {type: "import", id, buf} | {type: "warmup"}
 // Messages out: {type: "reply", id, status, body} | {type: "reply", id, status, file: {buf, type, filename}}
 //               {type: "state", state} (job stage changes) | {type: "progress", phase, msg, loaded, total}
@@ -18,6 +18,12 @@ const KEEP_JOBS = 20;                      // the upload page lists the 20 lates
 // files saved per job (inputs other than the PDF are dropped after reading: they are large and
 // the geometry is all the engine needs)
 const SAVED = ["config.json", "geometry.json", "mb_result.json", "mb.xlsx", "input.pdf"];
+// a set of PDFs is kept as input_1.pdf, input_2.pdf ... (the names are in job.json "files")
+function savedNames(d) {
+  let n = 0;
+  try { n = JSON.parse(FS().readFile(`${d}/job.json`, { encoding: "utf8" })).files?.length || 0; } catch { /* no job.json yet */ }
+  return n > 1 ? [...SAVED, ...Array.from({ length: n }, (_, i) => `input_${i + 1}.pdf`)] : SAVED;
+}
 
 let manifest = null;
 let py = null, naap = null, booting = null, pdfReady = null;
@@ -208,18 +214,18 @@ async function hydrate(id) {
   }
   if (active && active !== id) evict(active);
   active = id;
-  for (const name of SAVED) {
+  for (const name of savedNames(d)) {
     const p = `${d}/${name}`;
     if (exists(p)) continue;
     const f = await idbGet("files", `${id}/${name}`);
     if (f) writeFile(p, f.data instanceof Blob ? new Uint8Array(await f.data.arrayBuffer()) : new Uint8Array(f.data), f.mtime);
   }
-  if (exists(`${d}/input.pdf`)) await pdfSupport();
+  if (savedNames(d).some((n) => /\.pdf$/.test(n) && exists(`${d}/${n}`))) await pdfSupport();
 }
 
 function evict(id) {
   const d = `${JOBS}/${id}`;
-  for (const name of [...SAVED, "sheets.json", "project.naap.json"]) {
+  for (const name of [...savedNames(d), "sheets.json", "project.naap.json"]) {
     const p = `${d}/${name}`;
     if (exists(p)) { FS().unlink(p); saved.delete(p); }
   }
@@ -243,7 +249,7 @@ async function persistNow(id) {
     await idbPut("jobs", id, { state: JSON.parse(FS().readFile(jp, { encoding: "utf8" })), mtime: mt });
     saved.set(jp, mt);
   }
-  for (const name of SAVED) {
+  for (const name of savedNames(d)) {
     const p = `${d}/${name}`;
     if (!exists(p)) continue;
     const mt = mtimeOf(p);
@@ -296,12 +302,18 @@ function unwrap(json) {
   return r.body;
 }
 
-async function upload({ name, size, buf }) {
+async function upload({ files }) {
   await boot();
-  const ext = name.toLowerCase().split(".").pop();
-  const { id } = unwrap(naap.new_job(name, size));
+  const names = files.map((f) => f.name);
+  const ext = names[0].toLowerCase().split(".").pop();
+  const total = files.reduce((n, f) => n + f.size, 0);
+  const { id } = unwrap(naap.new_job(names[0], total, files.length > 1 ? JSON.stringify(names) : null));
   if (ext === "pdf") await pdfSupport();
-  FS().writeFile(`${JOBS}/${id}/input.${ext}`, new Uint8Array(buf));
+  // one file at a time; the page's copy is dropped as soon as it is in the file system
+  files.forEach((f, i) => {
+    FS().writeFile(`${JOBS}/${id}/${ext === "pdf" && files.length > 1 ? `input_${i + 1}.pdf` : `input.${ext}`}`, new Uint8Array(f.buf));
+    f.buf = null;
+  });
   const st = unwrap(naap.accept_input(id));
   if (active && active !== id) evict(active);
   active = id;

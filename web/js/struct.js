@@ -1,7 +1,7 @@
 // Structural (PDF) jobs: the Steel, Schedules and Calibration tabs, and the drawing
 // highlights behind them (schedule cells, calibration samples, steel by element).
 
-import { S, A } from "./state.js";
+import { S, A, sheetSource } from "./state.js";
 import { el, fmt, fq, unionBox, validBox } from "./util.js";
 import { tradeOf } from "./theme.js";
 import { card } from "./ledger.js";

@@ -24,7 +24,8 @@ from .cluster import KINDS, cluster
 from .roles import ROLES
 
 MAX_UPLOAD_MB = int(os.environ.get("DWG_MB_MAX_UPLOAD_MB", "300"))
-MAX_PDF_MB = int(os.environ.get("DWG_MB_MAX_PDF_MB", "100"))
+MAX_PDF_MB = int(os.environ.get("DWG_MB_MAX_PDF_MB", "100"))  # total for one upload (a set of PDFs counts together)
+MAX_SET_FILES = int(os.environ.get("DWG_MB_MAX_SET_FILES", "40"))
 ENGINE_MODULE = os.environ.get("MB_ENGINE", "engine.mb")
 MAX_RENDER_PX = 24_000_000  # pixel budget per sheet render (dpi x clip), guards memory
 
@@ -63,7 +64,7 @@ def is_struct(d: Path) -> bool:
 
 
 def meta() -> dict:
-    return {"roles": ROLES, "kinds": KINDS, "max_upload_mb": MAX_UPLOAD_MB, "max_pdf_mb": MAX_PDF_MB,
+    return {"roles": ROLES, "kinds": KINDS, "max_upload_mb": MAX_UPLOAD_MB, "max_pdf_mb": MAX_PDF_MB, "max_set_files": MAX_SET_FILES,
             "engine": ENGINE_MODULE, "accept": sorted(jobs.ALLOWED_EXT)}
 
 
@@ -73,7 +74,7 @@ def list_jobs() -> list[dict]:
         for d in jobs.DATA_DIR.iterdir():
             if jobs.JOB_ID_RE.match(d.name) and (d / "job.json").exists():
                 st = jobs.read_state(d)
-                out.append({k: st.get(k) for k in ("id", "filename", "status", "created", "kind")})
+                out.append({k: st.get(k) for k in ("id", "filename", "files", "status", "created", "kind")})
     return sorted(out, key=lambda s: -(s["created"] or 0))[:20]
 
 
@@ -152,9 +153,9 @@ def write_workbook(d: Path, result, cfg: dict) -> None:
     project = (cfg.get("project") or {}).get("name", "")
     if is_struct(d):
         from engine_struct.export import write_struct_xlsx
-        write_struct_xlsx(result, d / "mb.xlsx", project=project)
+        write_struct_xlsx(result, d / "mb.xlsx", project=project, quick=bool(cfg.get("quick")))
     else:
-        write_xlsx(result, d / "mb.xlsx", project=project)
+        write_xlsx(result, d / "mb.xlsx", project=project, quick=bool(cfg.get("quick")))
 
 
 def result_json(d: Path, result) -> dict:
@@ -417,9 +418,13 @@ def sheet_png(d: Path, n: int, dpi: float = 72, clip: str = "", layers: str | No
     if box is None and lay is None and cache.exists():
         return cache
     with jobs.PDF_LOCK:
-        doc = open_pdf(d / "input.pdf")
         try:
-            png = doc.page(n - 1).render_png(box, dpi, lay)
+            path, page = jobs.pdf_for_sheet(d, sh)
+        except jobs.JobError as exc:
+            raise ServiceError(404, str(exc))
+        doc = open_pdf(path)
+        try:
+            png = doc.page(page).render_png(box, dpi, lay)
         finally:
             doc.close()
     if box is None and lay is None:

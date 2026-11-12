@@ -12,12 +12,41 @@ import pymupdf
 from .base import BackendInfo, PdfAnnot, PdfPageInfo, PdfPath, TextSpan
 
 INFO = BackendInfo("pymupdf", "AGPL-3.0 / commercial (Artifex)",
-                   ["paths", "text", "ocg-layers", "images", "annotations", "render", "render-layers"])
+                   ["paths", "text", "ocg-layers", "images", "annotations", "render", "render-layers", "write"])
 
 
 def _pt(m, p) -> tuple[float, float]:
     q = pymupdf.Point(p) * m
     return (float(q.x), float(q.y))
+
+
+def _gap_parts(m, chars, size: float, d) -> tuple:
+    """Split one span at wide gaps between its characters (table cells written as one text run).
+    Returns ((text, bbox), ...) or () when the run has no such gap."""
+    if len(chars) < 2 or size <= 0:
+        return ()
+    horiz = abs(d[0]) >= abs(d[1])
+    groups, cur = [], [chars[0]]
+
+    def box(cs):
+        pts = [q for c in cs for q in (_pt(m, (c[3][0], c[3][1])), _pt(m, (c[3][2], c[3][3])))]
+        return (min(p[0] for p in pts), min(p[1] for p in pts), max(p[0] for p in pts), max(p[1] for p in pts))
+
+    prev = box([chars[0]])
+    for c in chars[1:]:
+        b = box([c])
+        lo, hi = (b[0], prev[2]) if horiz else (b[1], prev[3])
+        if not horiz and d[1] < 0:
+            lo, hi = prev[1], b[3]
+        if abs(lo - hi) > 0.8 * size and lo > hi - 1e-6 or (horiz and d[0] < 0 and prev[0] - b[2] > 0.8 * size):
+            groups.append(cur)
+            cur = []
+        cur.append(c)
+        prev = b
+    groups.append(cur)
+    if len(groups) < 2:
+        return ()
+    return tuple(("".join(chr(c[0]) if c[0] >= 0 else "�" for c in g), box(g)) for g in groups)
 
 
 class _Page:
@@ -68,9 +97,11 @@ class _Page:
             bbox = (min(a[0], b[0]), min(a[1], b[1]), max(a[0], b[0]), max(a[1], b[1]))
             dx, dy = s.get("dir") or (1.0, 0.0)
             v = pymupdf.Point(dx, dy) * pymupdf.Matrix(m.a, m.b, m.c, m.d, 0, 0)
+            size = float(s.get("size") or 0.0)
             out.append(TextSpan(text=text, bbox=bbox, origin=_pt(m, chars[0][2]), dir=(float(v.x), float(v.y)),
-                                size=float(s.get("size") or 0.0), font=s.get("font") or "",
-                                layer=s.get("layer") or "", seq=int(s.get("seqno", k))))
+                                size=size, font=s.get("font") or "",
+                                layer=s.get("layer") or "", seq=int(s.get("seqno", k)),
+                                parts=_gap_parts(m, chars, size, (float(v.x), float(v.y)))))
         return out
 
     def images(self) -> list[tuple[float, float, float, float]]:
@@ -150,3 +181,67 @@ class _Doc:
 
 def open_pdf(path: str) -> _Doc:
     return _Doc(str(path))
+
+
+class _Writer:
+    """Builds a PDF with PyMuPDF shapes. One Shape per page, committed once: commit() re-scans the whole
+    page content, so committing per style group is quadratic (minutes on large drawings)."""
+
+    def __init__(self):
+        self._d = pymupdf.open()
+        self._sh = None
+
+    def _flush(self) -> None:
+        if self._sh is not None:
+            self._sh.commit()
+            self._sh = None
+
+    def add_page(self, width: float, height: float, background: tuple | None = (1.0, 1.0, 1.0)) -> None:
+        self._flush()
+        page = self._d.new_page(width=width, height=height)
+        self._sh = page.new_shape()
+        if background is not None:
+            self._sh.draw_rect(page.rect)
+            self._sh.finish(color=None, fill=background)
+
+    def strokes(self, polylines, color, width) -> None:
+        n = 0
+        for pl in polylines:
+            if len(pl) >= 2:
+                self._sh.draw_polyline([pymupdf.Point(*p) for p in pl])
+                n += 1
+        if n:
+            self._sh.finish(color=color, fill=None, width=width, closePath=False, lineCap=1, lineJoin=1)
+
+    def fills(self, polygons, color) -> None:
+        n = 0
+        for pg in polygons:
+            if len(pg) >= 3:
+                self._sh.draw_polyline([pymupdf.Point(*p) for p in pg])
+                n += 1
+        if n:
+            self._sh.finish(color=None, fill=color, even_odd=True, closePath=True)
+
+    def text(self, origin, s, size, angle_deg, color) -> bool:
+        if not s.strip() or size <= 0:
+            return True
+        ok = True
+        try:
+            s.encode("latin-1")
+        except UnicodeEncodeError:
+            s = s.encode("latin-1", "replace").decode("latin-1")
+            ok = False
+        p = pymupdf.Point(*origin)
+        # text is stacked above all strokes and fills of the page (Shape keeps one text layer)
+        # angle_deg is counter-clockwise as seen on the page (checked by tests/test_convert.py)
+        morph = (p, pymupdf.Matrix(angle_deg)) if abs(angle_deg) > 1e-6 else None
+        self._sh.insert_text(p, s, fontsize=size, fontname="helv", color=color, fill=color, morph=morph)
+        return ok
+
+    def tobytes(self) -> bytes:
+        self._flush()
+        return self._d.tobytes(deflate=True, garbage=3)
+
+
+def open_writer() -> _Writer:
+    return _Writer()

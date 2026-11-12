@@ -47,7 +47,7 @@ def job_dir(job_id: str) -> Path:
     return d
 
 
-def new_job(filename: str, ext: str) -> tuple[str, Path]:
+def new_job(filename: str, ext: str, files: list[str] | None = None) -> tuple[str, Path]:
     job_id = uuid.uuid4().hex
     d = DATA_DIR / job_id
     d.mkdir(parents=True, exist_ok=False)
@@ -55,6 +55,7 @@ def new_job(filename: str, ext: str) -> tuple[str, Path]:
         "id": job_id,
         "filename": Path(filename).name[:200],
         "kind": ext.lstrip("."),
+        "files": [Path(f).name[:200] for f in files] if files else [Path(filename).name[:200]],
         "status": "uploading",
         "message": "",
         "error": None,
@@ -63,6 +64,28 @@ def new_job(filename: str, ext: str) -> tuple[str, Path]:
         "stats": {},
     })
     return job_id, d
+
+
+def pdf_input_name(index: int, count: int) -> str:
+    """Disk name of the index-th PDF of a set: input.pdf for a single file, else input_<n>.pdf (1-based)."""
+    return "input.pdf" if count == 1 else f"input_{index + 1}.pdf"
+
+
+def pdf_inputs(d: Path) -> list[Path]:
+    """The PDFs of a job in set order (file_index order)."""
+    if (d / "input.pdf").exists():
+        return [d / "input.pdf"]
+    found = sorted(d.glob("input_*.pdf"), key=lambda p: int(p.stem.split("_")[1]))
+    return found
+
+
+def pdf_for_sheet(d: Path, sheet: dict) -> tuple[Path, int]:
+    """(pdf path, 0-based page) of a sheet; sheets from before multi-file sets have no file_index."""
+    files = pdf_inputs(d)
+    fi = int(sheet.get("file_index", 0))
+    if fi >= len(files):
+        raise JobError("the PDF of this sheet is missing")
+    return files[fi], int(sheet.get("file_page", sheet["sheet"])) - 1
 
 
 def read_state(d: Path) -> dict:
@@ -149,23 +172,27 @@ def pdf_regions(geometry: dict) -> list[dict]:
 
 def _process_pdf(d: Path, st: dict) -> None:
     from app.pdf_backends import open_pdf
-    from app.pdf_extract import ScannedPDFError, extract_pdf
+    from app.pdf_extract import ScannedPDFError, extract_pdfs
 
     timings = {}
     update_state(d, status="parsing", message="Reading the PDF sheets (vector paths and text)...")
     t = time.time()
     try:
+        files = pdf_inputs(d)
+        names = st.get("files") or [f.name for f in files]
         with PDF_LOCK:
-            doc = open_pdf(d / "input.pdf")
-            try:
-                pages = doc.page_count
-            finally:
-                doc.close()
+            pages = 0
+            for f in files:
+                doc = open_pdf(f)
+                try:
+                    pages += doc.page_count
+                finally:
+                    doc.close()
             if pages < 1:
                 raise JobError("the PDF has no pages")
             if pages > MAX_PDF_PAGES:
-                raise JobError(f"the PDF has {pages} pages; the limit is {MAX_PDF_PAGES} (set DWG_MB_MAX_PDF_PAGES)")
-            geometry = extract_pdf(d / "input.pdf")
+                raise JobError(f"the PDF set has {pages} pages; the limit is {MAX_PDF_PAGES} (set DWG_MB_MAX_PDF_PAGES)")
+            geometry = extract_pdfs(files, names=names)
     except ScannedPDFError as exc:
         update_state(d, status="error", error=str(exc), error_kind="scanned")
         return

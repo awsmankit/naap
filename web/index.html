@@ -60,9 +60,9 @@
           <path d="M14 8h26l10 10v38H14z" /><path d="M40 8v10h10" /><path d="M32 46V26m-8 8 8-8 8 8" />
         </svg>
         <h1 id="upTitle">Drop a drawing to start a measurement book</h1>
-        <p id="upHint">AutoCAD <b>.dwg</b> or <b>.dxf</b> up to <span id="maxMb">300</span> MB, or a vector <b>.pdf</b> drawing set. <span id="upPrivacy">Nothing leaves this computer.</span></p>
+        <p id="upHint">AutoCAD <b>.dwg</b> or <b>.dxf</b> up to <span id="maxMb">300</span> MB, or a vector <b>.pdf</b> drawing. Several PDFs can be read together as one set. <span id="upPrivacy">Nothing leaves this computer.</span></p>
         <label class="btn primary" for="fileInput">Choose a file</label>
-        <input type="file" id="fileInput" accept=".dwg,.dxf,.pdf" hidden>
+        <input type="file" id="fileInput" accept=".dwg,.dxf,.pdf" multiple hidden>
       </div>
       <!-- the title block fills in as the drawing is converted -->
       <dl class="titleblock" id="titleblock" aria-live="polite">
@@ -79,6 +79,19 @@
     <div class="upload-side">
       <ol class="stages" id="stages" aria-label="Conversion progress" hidden></ol>
       <p class="err" id="upErr" role="alert" hidden></p>
+      <div class="quick-up" id="quickUp" hidden>
+        <button class="btn" type="button" id="btnQuickUp">Quick build</button>
+        <p class="muted small">Skips the questions and builds with the engine's defaults. Assumed values are marked.</p>
+      </div>
+      <section class="setbox" id="setBox" aria-labelledby="setTitle" hidden>
+        <h2 class="side-h" id="setTitle" aria-live="polite">0 files as one set</h2>
+        <p class="muted small">The sheets are numbered in this order and measured together as one drawing set.</p>
+        <ol class="setfiles" id="setFiles"></ol>
+        <div class="setacts">
+          <button class="btn primary" type="button" id="setGo">Read as one set</button>
+          <button class="btn" type="button" id="setCancel">Cancel</button>
+        </div>
+      </section>
       <h2 class="side-h">Recent drawings</h2>
       <ul class="recent" id="recent"><li class="muted">None yet.</li></ul>
       <p class="muted small" id="projectOpen" hidden>Carry on from a saved project: <a href="#" id="btnOpenProject">Open a .naap.json file</a>. Jobs also stay in this browser until you clear its site data.
@@ -143,6 +156,7 @@
         <div class="rv-body" id="rvBody"></div>
         <div class="panel-foot">
           <span class="muted small" id="saveState"></span>
+          <button class="btn" id="btnQuick" type="button" title="Skip the questions: build with the engine's defaults">Quick build</button>
           <button class="btn primary" id="btnBuild">Build measurement book</button>
         </div>
       </aside>
@@ -155,6 +169,10 @@
           <input type="search" id="q" placeholder="Search items, rooms, tags  ( / )" aria-label="Search">
           <select id="tradeSel" aria-label="Trade"></select>
           <div class="seg" id="statusSeg" role="group" aria-label="Status filter"></div>
+        </div>
+        <div class="notice quick-banner" id="quickBanner" role="status" hidden>
+          <span id="quickMsg"></span>
+          <button class="btn" type="button" id="quickReview">Review</button>
         </div>
         <div class="notice" id="notice" hidden></div>
         <div class="sheet-scroll" id="scroller" tabindex="-1">

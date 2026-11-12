@@ -28,3 +28,11 @@ export const S = {
 export const A = {};   // actions, filled in by main.js
 
 export const rowById = (id) => S.mb?._rowIdx?.get(id);
+
+/** Where a sheet came from when the drawing set has several PDFs: "plans.pdf, page 3" (else ""). */
+export const sheetSource = (n) => {
+  const sheets = S.geo?.sheets || [];
+  const s = sheets.find((x) => x.sheet === Number(n));
+  if (!s?.file || !sheets.some((x) => x.file_index !== s.file_index)) return "";
+  return `${s.file}, page ${s.file_page ?? s.sheet}`;
+};

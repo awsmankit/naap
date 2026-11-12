@@ -3,7 +3,7 @@
 // (meta.review of an engine run, app/service.py); answers go into the config the way resolving a
 // flag on the MB page does (config.flags[id] = {status, value}), plus the region fields the engine reads.
 
-import { S, A } from "./state.js";
+import { S, A, sheetSource } from "./state.js";
 import { $, $$, el, fmt } from "./util.js";
 import { ROLE_SWATCH } from "./theme.js";
 import { runReview } from "./api.js";
@@ -437,7 +437,7 @@ function viewItem(r, kinds, levels) {
   if (pv.warn) li.append(el("p", { class: "rv-warn" }, pv.warn));
   if (!S.isPdf && p && m && r.kind === "plan") li.append(el("div", { class: "fl" }, floorsLine(r, p)));
   if (S.isPdf && p) li.append(el("div", { class: "fl" }, el("div", { class: "fl-line" }, el("span", { class: "fl-sum" }, `${p.group} · ×${p.multiplier}`))));
-  li.append(r.kind === "sheet" ? el("div", { class: "sub" }, el("span", {}, r.title || ""), el("span", {}, r.count == null ? "" : `${r.count} item${r.count === 1 ? "" : "s"}`)) : el("div", { class: "sub" },
+  li.append(r.kind === "sheet" ? el("div", { class: "sub" }, el("span", {}, r.title || ""), sheetSource(r.sheet) ? el("span", { class: "src" }, sheetSource(r.sheet)) : null, el("span", {}, r.count == null ? "" : `${r.count} item${r.count === 1 ? "" : "s"}`)) : el("div", { class: "sub" },
     el("select", { "aria-label": `View type of ${r.name}`, onchange: (e) => { r.kind = e.target.value; structural(); renderReview(); } },
       kinds.map((k) => el("option", { value: k, selected: k === r.kind }, k))),
     levels.length ? el("select", { "aria-label": `Level of ${r.name}`, onchange: (e) => { r.level = e.target.value; A.cfgChanged(); } },

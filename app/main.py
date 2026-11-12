@@ -35,32 +35,42 @@ def meta():
 
 
 @app.post("/api/jobs")
-async def upload(request: Request, file: UploadFile):
-    name = Path(file.filename or "").name
-    ext = Path(name).suffix.lower()
-    if ext not in jobs.ALLOWED_EXT:
+async def upload(request: Request, file: list[UploadFile]):
+    """One drawing, or several PDFs (repeat the `file` field) as one drawing set."""
+    names = [Path(f.filename or "").name for f in file]
+    exts = [Path(n).suffix.lower() for n in names]
+    if not file or any(e not in jobs.ALLOWED_EXT for e in exts):
         raise HTTPException(400, "Only .dwg, .dxf and .pdf files are accepted")
+    if len(file) > 1 and set(exts) != {".pdf"}:
+        raise HTTPException(400, "A drawing set can only be several PDFs: upload a DWG or DXF on its own, not mixed with other files")
+    if len(file) > service.MAX_SET_FILES:
+        raise HTTPException(400, f"A set can have at most {service.MAX_SET_FILES} files")
+    ext = exts[0]
     max_mb = MAX_PDF_MB if ext == ".pdf" else MAX_UPLOAD_MB
     limit = max_mb * 1024 * 1024
     clen = request.headers.get("content-length")
-    if clen and clen.isdigit() and int(clen) > limit + 1024 * 1024:
-        raise HTTPException(413, f"File larger than {max_mb} MB")
+    if clen and clen.isdigit() and int(clen) > limit + 1024 * 1024 * len(file):
+        raise HTTPException(413, f"Files larger than {max_mb} MB in total")
 
-    job_id, d = jobs.new_job(name, ext)
-    dest = d / f"input{ext}"  # never use the client-supplied name on disk
+    job_id, d = jobs.new_job(names[0], ext, names)
     size = 0
-    with dest.open("wb") as fh:
-        while chunk := await file.read(1024 * 1024):
-            size += len(chunk)
-            if size > limit:
-                fh.close()
-                jobs.delete_job(job_id)
-                raise HTTPException(413, f"File larger than {max_mb} MB")
-            fh.write(chunk)
-    if size == 0 or not jobs.sniff(dest, ext):
-        jobs.delete_job(job_id)
-        what = "PDF (no %PDF- header)" if ext == ".pdf" else f"{ext[1:].upper()} drawing"
-        raise HTTPException(400, f"File does not look like a valid {what}")
+    for i, up in enumerate(file):
+        dest = d / (f"input{ext}" if ext != ".pdf" else jobs.pdf_input_name(i, len(file)))  # never use the client-supplied name on disk
+        fsize = 0
+        with dest.open("wb") as fh:
+            while chunk := await up.read(1024 * 1024):
+                fsize += len(chunk)
+                size += len(chunk)
+                if size > limit:
+                    fh.close()
+                    jobs.delete_job(job_id)
+                    raise HTTPException(413, f"Files larger than {max_mb} MB in total")
+                fh.write(chunk)
+        if fsize == 0 or not jobs.sniff(dest, ext):
+            jobs.delete_job(job_id)
+            what = "PDF (no %PDF- header)" if ext == ".pdf" else f"{ext[1:].upper()} drawing"
+            raise HTTPException(400, f"{names[i]} does not look like a valid {what}" if len(file) > 1
+                                else f"File does not look like a valid {what}")
     jobs.update_state(d, status="queued", message="Queued", size=size)
     jobs.submit(job_id)
     return {"id": job_id}
