@@ -38,6 +38,7 @@ RUN uv sync --frozen --no-dev --no-install-project
 COPY app ./app
 COPY engine ./engine
 COPY engine_struct ./engine_struct
+COPY convert ./convert
 COPY web ./web
 COPY samples ./samples
 COPY LICENSE THIRD_PARTY_NOTICES.md README.md ./
